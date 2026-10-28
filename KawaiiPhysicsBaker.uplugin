@@ -1,0 +1,17 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "FriendlyName": "Kawaii Physics Baker",
+  "Description": "Native animation graph authoring and synchronized fixed-step baking for modular skeletal characters.",
+  "Category": "Animation",
+  "CanContainContent": false,
+  "EnabledByDefault": true,
+  "Plugins": [{ "Name": "KawaiiPhysics", "Enabled": true }],
+  "Modules": [
+    { "Name": "KawaiiPhysicsBakerGPU", "Type": "UncookedOnly", "LoadingPhase": "PostConfigInit", "TargetAllowList": ["Editor"] },
+    { "Name": "KawaiiPhysicsBakerRuntime", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "KawaiiPhysicsBaker", "Type": "UncookedOnly", "LoadingPhase": "Default", "TargetAllowList": ["Editor"] },
+    { "Name": "KawaiiPhysicsBakerEditor", "Type": "UncookedOnly", "LoadingPhase": "Default", "TargetAllowList": ["Editor"] }
+  ]
+}

@@ -1,0 +1,217 @@
+#include "KawaiiPhysicsIKCorrectionMath.h"
+
+namespace KawaiiPhysicsIKCorrection
+{
+	namespace
+	{
+		constexpr double DirectionTolerance = 1.e-8;
+
+		bool IsFinite(const FVector& Value) {
+			return FMath::IsFinite(Value.X) && FMath::IsFinite(Value.Y) && FMath::IsFinite(Value.Z);
+		}
+
+		FVector ClosestOnSegment(const FVector& Point, const FVector& Start, const FVector& End) {
+			const FVector Edge = End - Start;
+			const double LengthSquared = Edge.SizeSquared();
+			const double T = LengthSquared > DirectionTolerance ? FMath::Clamp(FVector::DotProduct(Point - Start, Edge) / LengthSquared, 0.0, 1.0) : 0.0;
+			return Start + T * Edge;
+		}
+
+		FVector Perpendicular(const FVector& Axis) {
+			const FVector N = Axis.GetSafeNormal(DirectionTolerance);
+			if (N.IsNearlyZero()) {
+				return FVector::YAxisVector;
+			}
+			const FVector Abs = N.GetAbs();
+			const FVector Seed = Abs.X <= Abs.Y && Abs.X <= Abs.Z ? FVector::XAxisVector : (Abs.Y <= Abs.Z ? FVector::YAxisVector : FVector::ZAxisVector);
+			return FVector::CrossProduct(N, Seed).GetSafeNormal(DirectionTolerance);
+		}
+
+		FVector ContactNormal(const FVector& Point, const FVector& OnCapsule, const FVector& ReferencePoint, const FCapsule& Capsule, const FVector& ClothSegment) {
+			const FVector Delta = Point - OnCapsule;
+			if (Delta.SizeSquared() > DirectionTolerance) {
+				return Delta.GetSafeNormal(DirectionTolerance);
+			}
+
+			const FVector Axis = Capsule.End - Capsule.Start;
+			const FVector ReferenceDelta = ReferencePoint - ClosestOnSegment(ReferencePoint, Capsule.Start, Capsule.End);
+			// At an exact crossing, move perpendicular to both segments so that the
+			// closest point does not merely slide along either segment's centerline.
+			FVector Normal = FVector::CrossProduct(ClothSegment, Axis).GetSafeNormal(DirectionTolerance);
+			if (!Normal.IsNearlyZero()) {
+				if (FVector::DotProduct(Normal, ReferenceDelta) < 0.0) {
+					Normal *= -1.0;
+				}
+				return Normal;
+			}
+			if (ReferenceDelta.SizeSquared() > DirectionTolerance) {
+				Normal = ReferenceDelta.GetSafeNormal(DirectionTolerance);
+				if (!ClothSegment.IsNearlyZero()) {
+					const FVector ClothDirection = ClothSegment.GetSafeNormal(DirectionTolerance);
+					Normal -= ClothDirection * FVector::DotProduct(Normal, ClothDirection);
+				}
+				Normal.Normalize(DirectionTolerance);
+				if (!Normal.IsNearlyZero()) {
+					return Normal;
+				}
+			}
+			return Perpendicular(Axis.SizeSquared() > DirectionTolerance ? Axis : ClothSegment);
+		}
+
+		void ProjectLengths(TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FVector>& Reference, bool bReverse) {
+			for (int32 Step = 0; Step < Lengths.Num(); ++Step) {
+				const int32 A = bReverse ? Lengths.Num() - Step - 1 : Step;
+				const int32 B = A + 1;
+				const double WeightA = A == 0 ? 0.0 : 1.0;
+				const FVector Delta = Points[B] - Points[A];
+				const double Length = Delta.Size();
+				FVector Direction = Length > DirectionTolerance ? Delta / Length : (Reference[B] - Reference[A]).GetSafeNormal(DirectionTolerance);
+				if (Direction.IsNearlyZero()) {
+					Direction = FVector::XAxisVector;
+				}
+				const FVector Correction = Direction * ((Length - Lengths[A]) / (WeightA + 1.0));
+				Points[A] += WeightA * Correction;
+				Points[B] -= Correction;
+			}
+		}
+
+		void ProjectPoints(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius) {
+			for (int32 Point = 1; Point < Points.Num(); ++Point) {
+				for (const FCapsule& Capsule : Capsules) {
+					const double Radius = Capsule.Radius + ParticleRadius;
+					const FVector OnCapsule = ClosestOnSegment(Points[Point], Capsule.Start, Capsule.End);
+					const double Distance = FVector::Distance(Points[Point], OnCapsule);
+					if (Distance < Radius) {
+						Points[Point] += ContactNormal(Points[Point], OnCapsule, Reference[Point], Capsule, FVector::ZeroVector) * (Radius - Distance);
+					}
+				}
+			}
+		}
+
+		void ProjectSegments(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius) {
+			for (int32 A = 0; A + 1 < Points.Num(); ++A) {
+				const int32 B = A + 1;
+				for (const FCapsule& Capsule : Capsules) {
+					FVector OnCloth, OnCapsule;
+					FMath::SegmentDistToSegmentSafe(Points[A], Points[B], Capsule.Start, Capsule.End, OnCloth, OnCapsule);
+					const double Radius = Capsule.Radius + ParticleRadius;
+					const double Distance = FVector::Distance(OnCloth, OnCapsule);
+					if (Distance >= Radius) {
+						continue;
+					}
+
+					const FVector Edge = Points[B] - Points[A];
+					const double EdgeSquared = Edge.SizeSquared();
+					const double T = EdgeSquared > DirectionTolerance ? FMath::Clamp(FVector::DotProduct(OnCloth - Points[A], Edge) / EdgeSquared, 0.0, 1.0) : 0.0;
+					const double InverseMassA = A == 0 ? 0.0 : 1.0;
+					const double WeightA = 1.0 - T;
+					const double WeightB = T;
+					const double Denominator = InverseMassA * WeightA * WeightA + WeightB * WeightB;
+					// Contact exactly at a pinned root cannot be resolved by moving
+					// another joint. Leave it to the diagnostics instead of exploding.
+					if (Denominator <= DirectionTolerance) {
+						continue;
+					}
+					const FVector Normal = ContactNormal(OnCloth, OnCapsule, FMath::Lerp(Reference[A], Reference[B], T), Capsule, Edge);
+					const FVector Correction = Normal * ((Radius - Distance) / Denominator);
+					// A contact arbitrarily close to a pinned root has a tiny
+					// barycentric mass. Bound each projection instead of producing
+					// a very large tip displacement for an effectively fixed contact.
+					const double MaxProjection = 2.0 * Radius;
+					Points[A] += (InverseMassA * WeightA * Correction).GetClampedToMaxSize(MaxProjection);
+					Points[B] += (WeightB * Correction).GetClampedToMaxSize(MaxProjection);
+				}
+			}
+		}
+
+		FDiagnostics Measure(const TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FCapsule>& Capsules, double ParticleRadius) {
+			FDiagnostics Result;
+			for (const FVector& Point : Points) {
+				if (!IsFinite(Point)) {
+					Result.bFinite = false;
+					return Result;
+				}
+				for (const FCapsule& Capsule : Capsules) {
+					const double Distance = FVector::Distance(Point, ClosestOnSegment(Point, Capsule.Start, Capsule.End));
+					Result.MaxPenetration = FMath::Max(Result.MaxPenetration, Capsule.Radius + ParticleRadius - Distance);
+				}
+			}
+			for (int32 A = 0; A < Lengths.Num(); ++A) {
+				Result.MaxLengthError = FMath::Max(Result.MaxLengthError, FMath::Abs(FVector::Distance(Points[A], Points[A + 1]) - Lengths[A]));
+				for (const FCapsule& Capsule : Capsules) {
+					FVector OnCloth, OnCapsule;
+					FMath::SegmentDistToSegmentSafe(Points[A], Points[A + 1], Capsule.Start, Capsule.End, OnCloth, OnCapsule);
+					Result.MaxPenetration = FMath::Max(Result.MaxPenetration, Capsule.Radius + ParticleRadius - FVector::Distance(OnCloth, OnCapsule));
+				}
+			}
+			Result.bFinite = FMath::IsFinite(Result.MaxLengthError) && FMath::IsFinite(Result.MaxPenetration);
+			return Result;
+		}
+	}
+
+	FTransform WarpTransform(const FTransform& Bone, const FTransform& BaseAnchor, const FTransform& CurrentAnchor, const FTransform& BaseDriver, const FTransform& CurrentDriver, float Weight) {
+		const FTransform Anchored = Bone.GetRelativeTransform(BaseAnchor) * CurrentAnchor;
+		const FTransform Driven = Bone.GetRelativeTransform(BaseDriver) * CurrentDriver;
+		FTransform Result;
+		Result.Blend(Anchored, Driven, FMath::IsFinite(Weight) ? FMath::Clamp(Weight, 0.f, 1.f) : 0.f);
+		Result.NormalizeRotation();
+		return Result;
+	}
+
+	FDiagnostics
+	SolveChain(TArray<FVector>& Points, const TArray<double>& RestLengths, const TArray<FVector>& ReferencePoints, const TArray<FCapsule>& Capsules, int32 Iterations, double ParticleRadius) {
+		FDiagnostics Invalid;
+		Invalid.bFinite = false;
+		if (Points.IsEmpty()
+			|| RestLengths.Num() != Points.Num() - 1
+			|| ReferencePoints.Num() != Points.Num()
+			|| !FMath::IsFinite(ParticleRadius)
+			|| ParticleRadius < 0.0)
+		{
+			return Invalid;
+		}
+		for (int32 Index = 0; Index < Points.Num(); ++Index) {
+			if (!IsFinite(Points[Index]) || !IsFinite(ReferencePoints[Index])) {
+				return Invalid;
+			}
+		}
+		for (const double Length : RestLengths) {
+			if (!FMath::IsFinite(Length) || Length < 0.0) {
+				return Invalid;
+			}
+		}
+		for (const FCapsule& Capsule : Capsules) {
+			if (!IsFinite(Capsule.Start)
+				|| !IsFinite(Capsule.End)
+				|| !FMath::IsFinite(Capsule.Radius)
+				|| Capsule.Radius < 0.0)
+			{
+				return Invalid;
+			}
+		}
+
+		const TArray<FVector> OriginalPoints = Points;
+		const FVector Root = Points[0];
+		for (int32 Iteration = 0; Iteration < FMath::Clamp(Iterations, 1, 64); ++Iteration) {
+			ProjectLengths(Points, RestLengths, ReferencePoints, false);
+			ProjectLengths(Points, RestLengths, ReferencePoints, true);
+			ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
+			ProjectSegments(Points, ReferencePoints, Capsules, ParticleRadius);
+			ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
+			Points[0] = Root;
+			bool bFinite = true;
+			for (const FVector& Point : Points) {
+				bFinite &= IsFinite(Point);
+			}
+			if (!bFinite) {
+				Points = OriginalPoints;
+				return Invalid;
+			}
+		}
+		FDiagnostics Result = Measure(Points, RestLengths, Capsules, ParticleRadius);
+		if (!Result.bFinite) {
+			Points = OriginalPoints;
+		}
+		return Result;
+	}
+}

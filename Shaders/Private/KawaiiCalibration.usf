@@ -1,0 +1,197 @@
+#include "/Engine/Public/Platform.ush"
+
+// UE's root-parameter parser needs one declaration per global parameter.
+uint BoneCount;
+uint CapsuleCount;
+uint CandidateCount;
+uint FirstFrame;
+uint FrameCount;
+float DeltaTime;
+float SoftMargin;
+float SoftResponse;
+float3 Gravity;
+
+StructuredBuffer<float4> Bones;
+StructuredBuffer<float4> Poses;
+StructuredBuffer<float4> Ranges;
+StructuredBuffer<float4> Capsules;
+StructuredBuffer<float4> Frames;
+StructuredBuffer<float4> Candidates;
+RWStructuredBuffer<float4> Positions;
+RWStructuredBuffer<float4> Previous;
+RWStructuredBuffer<float4> Velocities;
+RWStructuredBuffer<float4> Scores;
+
+float3 SafeDirection(float3 V, float3 Fallback) {
+	float Q = dot(V, V);
+	return Q > 1.e-10 ? V * rsqrt(Q) : (dot(Fallback, Fallback) > 1.e-10 ? normalize(Fallback) : float3(1, 0, 0));
+}
+
+float3 Perpendicular(float3 Axis) {
+	return normalize(cross(Axis, abs(Axis.z) < .9 ? float3(0, 0, 1) : float3(0, 1, 0)));
+}
+
+// Keep this projection consistent with KawaiiContact::ConstrainDirection.
+float3 ConstrainDirection(float3 Direction, float3 PoseDirection, float4 Range) {
+	float3 Reference = SafeDirection(PoseDirection, float3(1, 0, 0));
+	float3 Normal = Range.xyz;
+	float CosLimit = Range.w > 0 ? cos(radians(clamp(Range.w, 0, 180))) : -1;
+	bool Planar = dot(Normal, Normal) > 1.e-8;
+	if (Planar) {
+		Normal = normalize(Normal);
+		Direction -= Normal * dot(Direction, Normal);
+		Reference -= Normal * dot(Reference, Normal);
+		float ProjectedLength = length(Reference);
+		CosLimit = ProjectedLength > 1.e-8 ? clamp(CosLimit / ProjectedLength, -1, 1) : -1;
+	}
+	Reference = SafeDirection(Reference, Planar ? Perpendicular(Normal) : float3(1, 0, 0));
+	Direction = SafeDirection(Direction, Reference);
+	float Alignment = dot(Direction, Reference);
+	if (Alignment >= CosLimit) {
+		return Direction;
+	}
+	float3 Tangent = SafeDirection(Direction - Reference * Alignment, Planar ? cross(Normal, Reference) : Perpendicular(Reference));
+	return Reference * CosLimit + Tangent * sqrt(max(0, 1 - CosLimit * CosLimit));
+}
+
+// Closest points between two bounded segments, including point capsules and zero-length edges.
+float Contact(float3 A, float3 B, float3 C, float3 D, float Radius, out float T, out float3 Normal, float3 Fallback) {
+	float3 U = B - A, V = D - C, W = A - C;
+	float AA = dot(U, U), BB = dot(U, V), CC = dot(V, V), DD = dot(U, W), EE = dot(V, W);
+	float S = 0;
+	if (AA < 1.e-8) {
+		T = 1;
+		S = CC > 1.e-8 ? saturate(EE / CC) : 0;
+	} else if (CC < 1.e-8) {
+		T = saturate(-DD / AA);
+	} else {
+		float Den = AA * CC - BB * BB;
+		T = Den > 1.e-8 ? saturate((BB * EE - CC * DD) / Den) : 0;
+		S = (BB * T + EE) / CC;
+		if (S < 0) {
+			S = 0;
+			T = saturate(-DD / AA);
+		} else if (S > 1) {
+			S = 1;
+			T = saturate((BB - DD) / AA);
+		}
+	}
+	float3 Diff = A + T * U - (C + S * V);
+	float3 Axis = CC > 1.e-8 ? V * rsqrt(CC) : float3(0, 0, 0);
+	float3 RadialFallback = Fallback - Axis * dot(Fallback, Axis);
+	if (dot(RadialFallback, RadialFallback) < 1.e-10) {
+		RadialFallback = cross(Axis, float3(0, 0, 1));
+	}
+	if (dot(RadialFallback, RadialFallback) < 1.e-10) {
+		RadialFallback = cross(Axis, float3(0, 1, 0));
+	}
+	Normal = SafeDirection(Diff, RadialFallback);
+	return Radius - length(Diff);
+}
+
+[numthreads(64, 1, 1)] void Main(uint3 ID : SV_DispatchThreadID) {
+	uint Candidate = ID.x;
+	if (Candidate >= CandidateCount) {
+		return;
+	}
+	float4 Config = Candidates[Candidate];
+	uint Base = Candidate * BoneCount;
+	float4 Score = Scores[Candidate];
+	for (uint Frame = FirstFrame; Frame < FirstFrame + FrameCount; ++Frame) {
+		uint PoseBase = Frame * BoneCount;
+		bool Reset = Frames[Frame].x > 0.5;
+		for (uint IntegrateBone = 0; IntegrateBone < BoneCount; ++IntegrateBone) {
+			uint K = Base + IntegrateBone;
+			float3 Target = Poses[PoseBase + IntegrateBone].xyz;
+			int Parent = (int)Bones[IntegrateBone].x;
+			if (Reset || Parent < 0) {
+				Positions[K] = float4(Target, 0);
+				Previous[K] = float4(Target, 0);
+				Velocities[K] = 0;
+			}
+			if (Parent < 0) {
+				continue;
+			}
+			float3 Old = Positions[K].xyz;
+			float3 Velocity = (Old - Previous[K].xyz) * (1 - saturate(Bones[IntegrateBone].y * Config.x));
+			float3 P = Old + Velocity + Gravity * DeltaTime * DeltaTime;
+			float3 PoseOffset = Target - Poses[PoseBase + Parent].xyz;
+			P = lerp(P, Positions[Base + Parent].xyz + PoseOffset, saturate(Bones[IntegrateBone].z * Config.y));
+			Previous[K] = float4(Old, 0);
+			Positions[K] = float4(P, 0);
+		}
+		uint Iterations = (uint)clamp(Config.w, 1, 8);
+		float SoftWeight = 1 - exp(-SoftResponse * DeltaTime / Iterations);
+		for (uint It = 0; It < Iterations; ++It) {
+			for (uint SolveBone = 0; SolveBone < BoneCount; ++SolveBone) {
+				int Parent = (int)Bones[SolveBone].x;
+				if (Parent < 0) {
+					continue;
+				}
+				uint K = Base + SolveBone, PK = Base + Parent;
+				float3 Offset = Poses[PoseBase + SolveBone].xyz - Poses[PoseBase + Parent].xyz;
+				float3 Old = Positions[K].xyz;
+				Positions[K] = float4(Positions[PK].xyz + SafeDirection(Old - Positions[PK].xyz, Offset) * length(Offset), 0);
+				Previous[K] += float4(Positions[K].xyz - Old, 0);
+				for (uint C = 0; C < CapsuleCount; ++C) {
+					float4 CA = Capsules[(Frame * CapsuleCount + C) * 2], CB = Capsules[(Frame * CapsuleCount + C) * 2 + 1];
+					float T;
+					float3 N;
+					float Depth = Contact(Positions[PK].xyz, Positions[K].xyz, CA.xyz, CB.xyz, CA.w + Bones[SolveBone].w * Config.z, T, N, Poses[PoseBase + SolveBone].xyz - CA.xyz);
+					if (Depth <= -SoftMargin) {
+						continue;
+					}
+					float Push = max(0, Depth) + max(0, SoftMargin + min(0, Depth)) * SoftWeight;
+					float WA = Bones[Parent].x < 0 ? 0 : 1 - T, WB = T, Den = WA * WA + WB * WB;
+					if (Den < 1.e-8) {
+						continue;
+					}
+					float3 DA = N * min(Push * WA / Den, 10), DB = N * min(Push * WB / Den, 10);
+					Positions[PK] += float4(DA, 0);
+					Previous[PK] += float4(DA, 0);
+					Positions[K] += float4(DB, 0);
+					Previous[K] += float4(DB, 0);
+					if (WA > 0) {
+						Previous[PK] += float4(N * min(0, dot(Positions[PK].xyz - Previous[PK].xyz, N)), 0);
+					}
+					if (WB > 0) {
+						Previous[K] += float4(N * min(0, dot(Positions[K].xyz - Previous[K].xyz, N)), 0);
+					}
+				}
+			}
+		}
+		for (uint RangeBone = 0; RangeBone < BoneCount; ++RangeBone) {
+			int Parent = (int)Bones[RangeBone].x;
+			float4 Range = Ranges[PoseBase + RangeBone];
+			if (Parent < 0 || Range.w < 0) {
+				continue;
+			}
+			uint K = Base + RangeBone;
+			float3 Anchor = Positions[Base + Parent].xyz;
+			float3 Offset = Poses[PoseBase + RangeBone].xyz - Poses[PoseBase + Parent].xyz;
+			float3 Old = Positions[K].xyz;
+			Positions[K] = float4(Anchor + ConstrainDirection(Old - Anchor, Offset, Range) * length(Offset), 0);
+			Previous[K] += float4(Positions[K].xyz - Old, 0);
+		}
+		for (uint ScoreBone = 0; ScoreBone < BoneCount; ++ScoreBone) {
+			uint K = Base + ScoreBone;
+			int Parent = (int)Bones[ScoreBone].x;
+			float3 V = Positions[K].xyz - Previous[K].xyz;
+			if (Frames[Frame].y > 0.5 && Parent >= 0) {
+				float MaxDepth = 0;
+				for (uint C = 0; C < CapsuleCount; ++C) {
+					float4 CA = Capsules[(Frame * CapsuleCount + C) * 2], CB = Capsules[(Frame * CapsuleCount + C) * 2 + 1];
+					float T;
+					float3 N;
+					// Score all candidates against the same envelope; radius search only changes the solver.
+					MaxDepth = max(MaxDepth, Contact(Positions[Base + Parent].xyz, Positions[K].xyz, CA.xyz, CB.xyz, CA.w + Bones[ScoreBone].w, T, N, float3(1, 0, 0)));
+				}
+				float3 Dev = Positions[K].xyz - Poses[PoseBase + ScoreBone].xyz, Acc = V - Velocities[K].xyz;
+				Score += float4(MaxDepth * MaxDepth, 0, dot(Dev, Dev), dot(Acc, Acc));
+				Score.y = max(Score.y, MaxDepth);
+			}
+			Velocities[K] = float4(V, 0);
+		}
+	}
+	Scores[Candidate] = Score;
+}
