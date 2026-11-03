@@ -1,13 +1,34 @@
 #include "KawaiiPhysicsIKCorrectionMath.h"
+
 #include "Misc/AutomationTest.h"
+
+#include "KawaiiClothingProxyMotion.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 using namespace KawaiiPhysicsIKCorrection;
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKWarpTest, "KawaiiPhysicsBaker.IKCorrection.PoseMapping", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyContactTest, "KawaiiPhysicsBaker.IKCorrection.ExternalProxyContact", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKProxyContactTest::RunTest(const FString&) {
+	FKawaiiClothingProxyCapsule Proxy;
+	Proxy.Id = TEXT("Collar");
+	Proxy.Start = Proxy.End = FVector::ZeroVector;
+	Proxy.Radius = 1.f;
+	TArray<FCapsule> Capsules;
+	TestTrue(TEXT("Current-frame custom proxy values are accepted"), AppendProxyCapsules({Proxy}, Capsules));
+	TArray<FVector> Points{FVector(0, 0, 3), FVector(0.2, 0, 0.2)};
+	const TArray<FVector> Reference = Points;
+	const TArray<double> Lengths{FVector::Distance(Points[0], Points[1])};
+	const FDiagnostics Result = SolveChain(Points, Lengths, Reference, Capsules, 64, 0.1);
+	TestTrue(TEXT("Baked hair segment clears custom garment proxy"), Result.bFinite && Result.MaxPenetration < 0.001);
+	TestTrue(TEXT("Contact does not move the hair root"), Points[0].Equals(Reference[0], 0.0));
+	FKawaiiClothingProxyCapsule Invalid = Proxy;
+	Invalid.Radius = -1.f;
+	TestFalse(TEXT("Invalid batches are rejected"), AppendProxyCapsules({Proxy, Invalid}, Capsules));
+	TestEqual(TEXT("A rejected batch cannot partially append colliders"), Capsules.Num(), 1);
+	return true;
+}
 
-bool FKawaiiIKWarpTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKWarpTest, "KawaiiPhysicsBaker.IKCorrection.PoseMapping", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKWarpTest::RunTest(const FString&) {
 	const FTransform Bone(FQuat(FVector::YAxisVector, 0.2), FVector(12, 4, -20));
 	const FTransform Anchor(FQuat::Identity, FVector(2, 0, 10));
 	const FTransform Driver(FQuat(FVector::XAxisVector, 0.1), FVector(5, 1, -3));
@@ -38,9 +59,7 @@ bool FKawaiiIKWarpTest::RunTest(const FString&) {
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKPointContactTest, "KawaiiPhysicsBaker.IKCorrection.PointContactAndLength", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FKawaiiIKPointContactTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKPointContactTest, "KawaiiPhysicsBaker.IKCorrection.PointContactAndLength", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKPointContactTest::RunTest(const FString&) {
 	TArray<FVector> Points{FVector(0, 0, 3), FVector(0.2, 0, 0.2)};
 	const TArray<FVector> Reference = Points;
 	const TArray<double> Lengths{FVector::Distance(Points[0], Points[1])};
@@ -54,9 +73,7 @@ bool FKawaiiIKPointContactTest::RunTest(const FString&) {
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKSegmentContactTest, "KawaiiPhysicsBaker.IKCorrection.SegmentContact", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FKawaiiIKSegmentContactTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKSegmentContactTest, "KawaiiPhysicsBaker.IKCorrection.SegmentContact", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKSegmentContactTest::RunTest(const FString&) {
 	// Both joints start outside the leg. A particle-only solver would miss this intersection.
 	TArray<FVector> Points{FVector(-3, 0, 0), FVector(3, 0, 0)};
 	const TArray<FVector> Reference = Points;
@@ -74,9 +91,7 @@ bool FKawaiiIKSegmentContactTest::RunTest(const FString&) {
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKConflictTest, "KawaiiPhysicsBaker.IKCorrection.PinnedRootConflictAndDegeneracy", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
-
-bool FKawaiiIKConflictTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKConflictTest, "KawaiiPhysicsBaker.IKCorrection.PinnedRootConflictAndDegeneracy", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKConflictTest::RunTest(const FString&) {
 	TArray<FVector> Points{FVector::ZeroVector, FVector(2, 0, 0)};
 	const TArray<FVector> Reference = Points;
 	const TArray<double> Lengths{2.0};

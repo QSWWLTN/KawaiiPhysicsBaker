@@ -44,7 +44,7 @@ public:
 	UWorld* GetWorld() const;
 	FPreviewScene* GetPreviewScene() const;
 	USkeletalMeshComponent* GetMainComponent() const;
-	const TArray<TWeakObjectPtr<UAnimSequence>>& GetOutputAssets() const { return OutputAssets; }
+	const TArray<TWeakObjectPtr<UObject>>& GetOutputAssets() const { return OutputAssets; }
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
 	virtual FString GetReferencerName() const override { return TEXT("FKawaiiPhysicsBakeSession"); }
 
@@ -67,8 +67,8 @@ private:
 	TObjectPtr<UKawaiiPhysicsBakeSettings> Settings = nullptr;
 	TObjectPtr<AActor> PreviewActor = nullptr;
 	TArray<TUniquePtr<FPart>> Parts;
-	TArray<TObjectPtr<UAnimSequence>> CreatedAssets;
-	TArray<TWeakObjectPtr<UAnimSequence>> OutputAssets;
+	TArray<TObjectPtr<UObject>> CreatedAssets;
+	TArray<TWeakObjectPtr<UObject>> OutputAssets;
 	FText Status;
 	uint64 LastEngineFrame = MAX_uint64;
 	int32 WarmUpIndex = 0;

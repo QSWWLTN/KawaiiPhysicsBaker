@@ -10,6 +10,8 @@
 #include "KawaiiPhysicsBakeBlueprint.generated.h"
 
 class UKawaiiPhysicsClothingCollisionProfile;
+class UKawaiiClothingProxyAsset;
+class UKawaiiClothingProxyMotionSet;
 class UAnimSequence;
 class USkeletalMesh;
 
@@ -39,6 +41,19 @@ struct KAWAIIPHYSICSBAKER_API FKawaiiPhysicsBakePart
 
 	UPROPERTY(EditAnywhere, Category = "部件", meta = (DisplayName = "相对变换", ToolTip = "该部件在预览场景中的相对位置、旋转和缩放。"))
 		FTransform RelativeTransform = FTransform::Identity;
+
+	/** Optional compact proxy motion is recorded from the same final pose as this part's animation. */
+	UPROPERTY(EditAnywhere,
+			  Category = "代理运动",
+			  meta = (DisplayName = "衣物代理定义",
+					  ToolTip = "可选。选择为此网格体创建的衣物代理；烘焙时额外导出最小骨骼层级、局部变换轨道和代理形状，自动关联本部件动画。"))
+		TObjectPtr<UKawaiiClothingProxyAsset> ProxyDefinition = nullptr;
+
+	UPROPERTY(EditAnywhere,
+			  Category = "代理运动",
+			  meta = (DisplayName = "代理动作集合",
+					  ToolTip = "可选。烘焙后将本次源动作的代理运动自动写入该集合，替换相同源动作的映射。未指定时创建新集合。需要同时指定衣物代理定义。"))
+		TObjectPtr<UKawaiiClothingProxyMotionSet> ProxyMotionSet = nullptr;
 };
 
 /** Settings belong to the graph asset; baking never edits the source animation. */
@@ -55,6 +70,18 @@ public:
 
 	UPROPERTY(EditAnywhere, Category = "源动画", meta = (DisplayName = "源动画", ToolTip = "与主骨骼网格体使用相同骨架的非叠加动画。"))
 		TObjectPtr<UAnimSequence> SourceAnimation = nullptr;
+
+	UPROPERTY(EditAnywhere,
+			  Category = "代理运动",
+			  meta = (DisplayName = "主部件衣物代理定义",
+					  ToolTip = "可选。为 Main 同步导出代理运动资产。附加衣物的代理应在对应附加部件中指定；此设置不启用旧的实时衣物碰撞桥。"))
+		TObjectPtr<UKawaiiClothingProxyAsset> ProxyDefinition = nullptr;
+
+	UPROPERTY(EditAnywhere,
+			  Category = "代理运动",
+			  meta = (DisplayName = "主部件代理动作集合",
+					  ToolTip = "可选。烘焙后自动更新 Main 的源动作映射；未指定时创建新集合。需要同时指定主部件衣物代理定义。"))
+		TObjectPtr<UKawaiiClothingProxyMotionSet> ProxyMotionSet = nullptr;
 
 	UPROPERTY(EditAnywhere, Category = "采样", meta = (DisplayName = "采样帧率", ToolTip = "固定物理模拟和动画输出帧率，范围为 1–240。", ClampMin = "1", ClampMax = "240"))
 		int32 SampleRate = 60;

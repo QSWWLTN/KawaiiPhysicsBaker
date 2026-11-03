@@ -313,7 +313,7 @@ FReply SKawaiiPhysicsBakePanel::Cancel() {
 
 FReply SKawaiiPhysicsBakePanel::BrowseResults() {
 	TArray<UObject*> Assets;
-	for (const TWeakObjectPtr<UAnimSequence>& Asset : Session->GetOutputAssets()) {
+	for (const TWeakObjectPtr<UObject>& Asset : Session->GetOutputAssets()) {
 		if (Asset.IsValid()) {
 			Assets.Add(Asset.Get());
 		}
@@ -392,8 +392,7 @@ FText SKawaiiPhysicsBakePanel::TimelineText() const {
 		Session->GetDuration(),
 		Session->GetPreviewFrame(),
 		Session->GetLastFrame(),
-		Session->CanScrubPreview() ? Session->GetCachedFrameCount() : 0,
-		Session->GetLastFrame() + 1
+		Session->CanScrubPreview() ? Session->GetCachedFrameCount() : 0, Session->GetLastFrame() + 1
 	);
 	return FText::FromString(Timeline);
 }
@@ -467,11 +466,7 @@ TSharedRef<SWidget> SKawaiiPhysicsBakePanel::MakePreviewControls() {
 					return FReply::Handled();
 				})
 			]
-			+ SWrapBox::Slot()
-			[
-				SNew(SCheckBox)
-				.IsChecked_Lambda([this] { return bLoopPreview ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
-				.OnCheckStateChanged_Lambda([this](ECheckBoxState State) {
+			+ SWrapBox::Slot() [ SNew(SCheckBox) .IsChecked_Lambda([this] { return bLoopPreview ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; }) .OnCheckStateChanged_Lambda([this](ECheckBoxState State) {
 					bLoopPreview = State == ECheckBoxState::Checked;
 					Session->SetPreviewLooping(bLoopPreview);
 				})

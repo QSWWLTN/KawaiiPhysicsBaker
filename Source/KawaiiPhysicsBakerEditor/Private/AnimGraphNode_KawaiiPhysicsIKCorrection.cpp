@@ -1,4 +1,5 @@
 #include "AnimGraphNode_KawaiiPhysicsIKCorrection.h"
+
 #include "BlueprintActionDatabaseRegistrar.h"
 #include "BlueprintNodeSpawner.h"
 
@@ -10,7 +11,8 @@ FText UAnimGraphNode_KawaiiPhysicsIKCorrection::GetTooltipText() const {
 	return LOCTEXT(
 		"Tooltip",
 		"Keeps the live Driver Pose body bones, restores selected baked clothing subtrees, and adapts their chains to body IK with capsule constraints. Both inputs must use the same animation time "
-		"and this mesh's Skeleton. Driver Pose must be evaluated after body IK. Alpha below one weakens collision correction. This is approximate bone collision, not triangle-mesh collision.");
+		"and this mesh's Skeleton. Driver Pose must be evaluated after body IK. Clothing Proxy Capsules accepts current-frame custom proxy-motion samples in this mesh's component space, "
+		"including for baked hair chains. Alpha below one weakens collision correction. This is approximate bone collision, not triangle-mesh collision.");
 }
 FString UAnimGraphNode_KawaiiPhysicsIKCorrection::GetNodeCategory() const {
 	return TEXT("Kawaii Physics|Runtime Correction");

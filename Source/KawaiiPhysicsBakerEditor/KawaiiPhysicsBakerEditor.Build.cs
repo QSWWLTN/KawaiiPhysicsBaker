@@ -11,7 +11,7 @@ public class KawaiiPhysicsBakerEditor : ModuleRules
             "AnimationBlueprintEditor", "Kismet", "KismetCompiler", "KismetWidgets", "UnrealEd", "EditorFramework",
             "Slate", "SlateCore", "InputCore", "ToolMenus", "PropertyEditor", "ContentBrowser", "EditorWidgets",
             "AssetTools", "AssetRegistry", "AdvancedPreviewScene", "Persona", "AnimationDataController",
-            "SequenceRecorder", "Projects", "RenderCore", "KawaiiPhysicsBakerGPU", "RHI", "Json", "JsonUtilities"
+            "SequenceRecorder", "Projects", "RenderCore", "PhysicsCore", "KawaiiPhysicsBakerGPU", "RHI", "Json", "JsonUtilities"
         });
     }
 }

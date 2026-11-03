@@ -1,7 +1,29 @@
 #include "KawaiiPhysicsIKCorrectionMath.h"
 
+#include "ProfilingDebugging/CpuProfilerTrace.h"
+
+#include "KawaiiClothingProxyMotion.h"
+#include "KawaiiPhysicsBakerProfiling.h"
+
 namespace KawaiiPhysicsIKCorrection
 {
+	bool AppendProxyCapsules(const TArray<FKawaiiClothingProxyCapsule>& Proxies, TArray<FCapsule>& OutCapsules) {
+		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_AppendProxyCapsules);
+		if (Proxies.Num() > 64 || OutCapsules.Num() + Proxies.Num() > 128) {
+			return false;
+		}
+		for (const FKawaiiClothingProxyCapsule& Proxy : Proxies) {
+			if (Proxy.Start.ContainsNaN() || Proxy.End.ContainsNaN() || !FMath::IsFinite(Proxy.Radius) || Proxy.Radius <= 0.f) {
+				return false;
+			}
+		}
+		OutCapsules.Reserve(OutCapsules.Num() + Proxies.Num());
+		for (const FKawaiiClothingProxyCapsule& Proxy : Proxies) {
+			OutCapsules.Add({Proxy.Start, Proxy.End, Proxy.Radius});
+		}
+		return true;
+	}
+
 	namespace
 	{
 		constexpr double DirectionTolerance = 1.e-8;
@@ -125,6 +147,7 @@ namespace KawaiiPhysicsIKCorrection
 		}
 
 		FDiagnostics Measure(const TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FCapsule>& Capsules, double ParticleRadius) {
+			TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_MeasureResiduals);
 			FDiagnostics Result;
 			for (const FVector& Point : Points) {
 				if (!IsFinite(Point)) {
@@ -160,13 +183,12 @@ namespace KawaiiPhysicsIKCorrection
 
 	FDiagnostics
 	SolveChain(TArray<FVector>& Points, const TArray<double>& RestLengths, const TArray<FVector>& ReferencePoints, const TArray<FCapsule>& Capsules, int32 Iterations, double ParticleRadius) {
+		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_SolveChain);
+		SCOPE_CYCLE_COUNTER(STAT_KawaiiBakerSolveChain);
 		FDiagnostics Invalid;
 		Invalid.bFinite = false;
 		if (Points.IsEmpty()
-			|| RestLengths.Num() != Points.Num() - 1
-			|| ReferencePoints.Num() != Points.Num()
-			|| !FMath::IsFinite(ParticleRadius)
-			|| ParticleRadius < 0.0)
+			|| RestLengths.Num() != Points.Num() - 1 || ReferencePoints.Num() != Points.Num() || !FMath::IsFinite(ParticleRadius) || ParticleRadius < 0.0)
 		{
 			return Invalid;
 		}
@@ -182,9 +204,7 @@ namespace KawaiiPhysicsIKCorrection
 		}
 		for (const FCapsule& Capsule : Capsules) {
 			if (!IsFinite(Capsule.Start)
-				|| !IsFinite(Capsule.End)
-				|| !FMath::IsFinite(Capsule.Radius)
-				|| Capsule.Radius < 0.0)
+				|| !IsFinite(Capsule.End) || !FMath::IsFinite(Capsule.Radius) || Capsule.Radius < 0.0)
 			{
 				return Invalid;
 			}
@@ -192,22 +212,40 @@ namespace KawaiiPhysicsIKCorrection
 
 		const TArray<FVector> OriginalPoints = Points;
 		const FVector Root = Points[0];
-		for (int32 Iteration = 0; Iteration < FMath::Clamp(Iterations, 1, 64); ++Iteration) {
-			ProjectLengths(Points, RestLengths, ReferencePoints, false);
-			ProjectLengths(Points, RestLengths, ReferencePoints, true);
-			ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
-			ProjectSegments(Points, ReferencePoints, Capsules, ParticleRadius);
-			ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
+		const int32 NumIterations = FMath::Clamp(Iterations, 1, 64);
+		const bool bDetailedTrace = KawaiiPhysicsBakerProfiling::IsDetailedSolverTracingEnabled();
+		INC_DWORD_STAT(STAT_KawaiiBakerSolverCalls);
+		INC_DWORD_STAT_BY(STAT_KawaiiBakerSolverPoints, Points.Num());
+		for (int32 Iteration = 0; Iteration < NumIterations; ++Iteration) {
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_Correction_LengthConstraints, bDetailedTrace);
+				ProjectLengths(Points, RestLengths, ReferencePoints, false);
+				ProjectLengths(Points, RestLengths, ReferencePoints, true);
+			}
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_Correction_PointContacts, bDetailedTrace);
+				ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
+			}
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_Correction_SegmentContacts, bDetailedTrace);
+				ProjectSegments(Points, ReferencePoints, Capsules, ParticleRadius);
+			}
+			{
+				TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_Correction_FinalPointContacts, bDetailedTrace);
+				ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
+			}
 			Points[0] = Root;
 			bool bFinite = true;
 			for (const FVector& Point : Points) {
 				bFinite &= IsFinite(Point);
 			}
 			if (!bFinite) {
+				INC_DWORD_STAT_BY(STAT_KawaiiBakerSolverIterations, Iteration + 1);
 				Points = OriginalPoints;
 				return Invalid;
 			}
 		}
+		INC_DWORD_STAT_BY(STAT_KawaiiBakerSolverIterations, NumIterations);
 		FDiagnostics Result = Measure(Points, RestLengths, Capsules, ParticleRadius);
 		if (!Result.bFinite) {
 			Points = OriginalPoints;

@@ -2,8 +2,11 @@
 
 #include "CoreMinimal.h"
 #include "Animation/AnimNodeBase.h"
+
 #include "KawaiiPhysicsIKCorrectionProfile.h"
 #include "KawaiiPhysicsIKCorrectionMath.h"
+#include "KawaiiClothingProxyMotion.h"
+
 #include "AnimNode_KawaiiPhysicsIKCorrection.generated.h"
 
 /** Both inputs use this mesh's Skeleton. DriverPose must contain the body's final IK pose. */
@@ -24,6 +27,12 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiPhysicsIKCorrection : publi
 	/** Zero retains baked clothing relative to current anchors. Values below one weaken collision correction. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Correction", meta = (PinShownByDefault, ClampMin = "0.0", ClampMax = "1.0"))
 		float Alpha = 1.f;
+
+	/** Current-frame capsules already transformed into this mesh's component space.
+	 * Sample the custom proxy motion assets using the same action times/weights as the displayed clothing.
+	 * Value data is consumed after exposed inputs update; no previous-frame component pose is read. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clothing Proxy", meta = (PinShownByDefault, DisplayName = "Clothing Proxy Capsules"))
+		TArray<FKawaiiClothingProxyCapsule> ExternalCapsules;
 
 	virtual void Initialize_AnyThread(const FAnimationInitializeContext& Context) override;
 	virtual void CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) override;

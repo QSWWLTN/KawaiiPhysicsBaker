@@ -66,7 +66,7 @@ Bake Source Pose
 
 ### 4. 导出动画
 
-点击 **烘焙新动画**，等待状态显示 `已保存 … 条同步动画`，然后点击 **定位结果** 在内容浏览器中选中结果。
+点击 **烘焙新动画**，等待状态显示已保存同步结果，然后点击 **定位结果** 在内容浏览器中选中结果。
 
 输出会自动保存，例如：
 
@@ -205,6 +205,105 @@ Bake Source Pose
 分体衣物启用父级碰撞时，确保身体先完成更新，例如为衣物组件设置 `AddTickPrerequisiteComponent(Body)`；父组件不能使用 Leader Pose。此开关只改变胶囊来源，两路 Pose 仍必须属于衣物 Mesh 的 Skeleton，需要在衣物图中准备匹配的驱动姿态。
 
 最多支持 `64` 条链和 `64` 个胶囊，当前 LOD 必须保留所需骨骼。缺少 Profile、缺骨或链配置无效时，节点回退到完整 Driver Pose；可在动画调试信息中查看原因、剩余穿透和骨长误差。这是骨骼链与胶囊的近似修正，不是完整布料模拟。
+
+## 衣物代理：自定义运动资产与烘焙头发修正
+
+此功能全部位于 KawaiiPhysicsBaker 插件。衣物代理运动使用独立的 Data Asset 保存**代理端点所需的最小骨骼层级、局部变换轨道和局部形状定义**，运行时不解码衣物 AnimSequence，也不读取衣物组件的上一帧姿态。衣物显示仍可使用同次烘焙输出的动画。
+
+### 创建与编辑衣物代理
+
+1. 打开 **Tools → Kawaii 衣物代理**。也可以先在内容浏览器选择衣物 Mesh 或已有代理定义，再打开面板。
+2. 选择衣物网格体，点击 **创建代理定义**，保存 `Kawaii 衣物代理` 资产（默认目录 `/Game/KawaiiProxies`）。已有资产可直接从 **代理定义** 选择器载入。
+3. 选择起点骨骼并点击 **添加代理**。默认连接该骨骼与第一个子骨骼；没有子骨骼时为球体。右侧属性可以修改唯一名称、两端骨骼、局部偏移和半径；两端重合即为球体。最大支持 64 个代理，绑定真实骨骼，不支持虚拟骨骼或插槽。
+4. 左侧实时显示衣物参考姿态和代理线框，可旋转、缩放并使用 **聚焦衣物** 检查贴合情况。当前通过属性数值编辑，不提供拖动变换控件或动作预览。
+5. 如果衣物有 PhysicsAsset，可以点击 **追加 PhysicsAsset 代理** 导入其球体和胶囊；不修改原 PhysicsAsset，不导入盒体或凸包，导入后仍需检查贴合情况。
+6. 点击 **校验并保存**。修改直接作用于所选定义资产，并支持撤销／重做；修改网格、形状或骨骼绑定后，需要重烘对应运动资产。
+
+### 同步导出代理运动与动作集合
+
+在烘焙面板的 Main 或对应衣物 Part 上指定 **衣物代理定义**，定义的网格必须与该部件相同。**代理动作集合** 可选择该衣物之前生成的集合；第一次可以留空。未选代理定义时保持原有动画烘焙行为。
+
+除原有 AnimSequence 外，每个选定部件还会输出：
+
+| 资产 | 内容 |
+| --- | --- |
+| `…_ProxyMotion` / `Kawaii 衣物代理运动` | 代理形状快照、最小父子层级、逐帧局部变换、源动作身份、对应衣物动画、采样信息及生成组 |
+| `…_ProxySet` / `Kawaii 衣物代理动作集合` | 同一衣物的源动画到代理运动资产映射；已有集合按源动画替换条目，旧动画及旧运动资产不会被覆盖 |
+
+集合保存的是运行时可读取的引用，不依赖编辑器包元数据。首次生成集合并成功保存后，工具会将它回填到对应部件的烘焙设置，记得保存烘焙蓝图。此后烘焙新动作会追加映射，重烘同一动作会替换映射。集合不能混用不同衣物网格、代理定义或装配变换。所有生成结果通过校验后才更新集合；磁盘保存失败会明确报告，可能留下部分已保存结果和待保存的集合。
+
+时间轴与衣物输出动画一致：采样点为 `i / SampleRate`，最后一个采样点保存源动作准确终点，输出时长向上对齐到整帧。正式轨道不包含预热。动画轨道和代理轨道合计沿用 400 万骨骼样本上限。
+
+### 运行时选择、采样与头发修正
+
+蓝图接口在 **Kawaii Physics → Baked Clothing Proxy** 分类中：
+
+1. 身体实际播放器提供本帧的 `FKawaiiClothingProxyActionSample` 数组：`SourceAnimation`、该源序列内的秒数 `Time`、非负 `Weight`。Montage 必须先换算当前动画片段内时间；该接口不会根据身体最终 Pose 自动推断源动作，也不会自动订阅 Montage 或状态机。
+2. 调用 **Resolve Clothing Proxy Actions**，传入当前衣物的 `Kawaii 衣物代理动作集合`，得到本帧对应的代理运动采样数组。缺少映射或源动作重复时返回失败并清空结果。输出条目的 `Motion.BakedAnimation` 是对应衣物显示动画的软引用，应在进入动作前加载；不要每帧同步加载。
+3. 调用 **Sample Blended Clothing Proxy Motion**；单动作也可调用 **Sample Clothing Proxy Motion**。`ProxyToTarget` 是衣物 Mesh 组件空间到头发所在 Mesh 组件空间的变换，必须由调用方提供。资产的 `RelativeTransform` 仅记录烘焙时摆放，不会再隐式叠加；按原装配关系且目标为 Main 时，可直接使用该记录值。
+4. 将输出值数组传入 **Baked Clothing IK Correction → Clothing Proxy Capsules**。为头发骨链创建 `KawaiiPhysicsIKCorrectionProfile`：Chains 填头发 Root/Tip，Driver 选择修正子树以外的头部骨骼；只需要碰撞修正时可将 Driver Weight 设为 0。`Baked Pose` 输入同一时刻的烘焙头发姿态，`Driver Pose` 输入身体当前姿态，两者仍须属于头发所在 Mesh 的 Skeleton。
+
+采样函数在游戏线程调用，动画工作线程只接收已经变换到目标组件空间的胶囊值数组。每帧更新数组；采样失败时传入空数组并处理返回的 Error，避免继续使用上一次动作的碰撞。Alpha 建议为 1，低于 1 会削弱最终接触修正。原有 Profile 身体胶囊与外部衣物代理可以同时参与求解。
+
+采样器会先在局部骨骼空间进行插值／混合，再重建父子层级及碰撞形状。正权重动作必须使用相同定义、骨骼层级、衣物网格和装配变换；全零权重没有可采样姿态，返回失败。时间超出片段时钳制到首末帧，不自行循环或推进播放时钟。代理形状变化后，旧运动资产会被拒绝。
+
+### 一致性与当前边界
+
+- 支持非叠加动作使用统一骨骼权重的局部姿态混合。任意分层遮罩、Mesh Space 混合、Inertialization、Control Rig 和额外衣物 IK 不会被自动重现；衣物显示与代理必须使用一致的姿态计算规则。
+- 记录的局部根运动原样保留。若衣物显示启用根锁定或提取 Root Motion，调用方须保证代理使用同样的根处理，不能只靠组件变换抵消不一致的骨骼轨道。
+- 不包含 Chaos 布料、Morph、材质顶点位移和网格精确接触。球体／胶囊是近似形状；高领等无法通过有限骨链位移避让的接触仍可能有残余穿透。
+- **Validate Proxy Motion** 做完整轨道校验，并在源资源已加载时检查参考骨架签名及编辑器源动画版本。适合装配／加载时或编辑器验收时调用，不应每帧执行。常规采样只检查结构、定义及实际访问的轨道，且不会加载软引用。
+- 本功能提供资产、映射和运行时接口；项目角色 AnimBP 的动作采样发布与衣物／头发接线需要按上述关系接入。不会自动改写现有角色蓝图。
+
+## 性能探针与耗时采集
+
+运行时代理、头发／衣物骨链修正及烘焙导出已加入静态 CPU Trace 计时区间。使用 Unreal Insights 的 **Timing Insights**，筛选 `KawaiiBaker_`，在选定时间段查看调用次数、平均／最大耗时、Inclusive 和 Exclusive 时间。游戏线程的代理采样与动画工作线程的修正分别记录，不应只看 GameThread。
+
+| 计时区间 | 测量范围 |
+| --- | --- |
+| `KawaiiBaker_Proxy_ResolveActions` | 身体源动作到当前衣物代理运动的映射查找 |
+| `KawaiiBaker_Proxy_SampleBlended` | 整次代理采样与混合；子项拆分为 `ValidateHeader`、`SampleLocalPose`、`BlendLocalPoses`、`BuildHierarchy`、`BuildCapsules` |
+| `KawaiiBaker_Proxy_ValidateAsset` | 完整资产校验，单独区分装配／验收成本与每帧采样成本 |
+| `KawaiiBaker_Proxy_DefinitionSignature` / `SkeletonSignature` | 定义及参考骨架签名计算 |
+| `KawaiiBaker_Correction_PreUpdate` | 游戏线程上的配置和父级碰撞快照 |
+| `KawaiiBaker_Correction_Update` / `Evaluate` | 动画节点更新／求值；包括上游 Pose 的开销，分别以 `InputDriverPose`、`InputBakedPose` 子区间标出 |
+| `KawaiiBaker_Correction_SolveChain` | 单条骨链的约束求解；`MeasureResiduals` 单独记录残余穿透及骨长诊断 |
+| `KawaiiBaker_Correction_ResolveChains` / `PrepareCapsules` / `SolveAndReconstruct` / `WriteOutputPose` | 骨链解析、碰撞准备、求解及变换重建、最终姿态写回 |
+| `KawaiiBaker_Bake_*` | 准备、各部件求值、轨道采集、代理数据构建、动画生成与回读校验、映射更新、各资产保存 |
+
+总区间包含子区间，**不要将父子 Inclusive 时间相加**。多工作线程耗时相加是 CPU 工作量，不等于整帧墙钟时间；以时间轴判断并行及阻塞。烘焙会在开始、完成、失败和取消时生成 `KawaiiBaker` 书签，便于定位一次操作；不输出逐帧日志。
+
+在编辑器或 Development 游戏的控制台中可以直接开启统计面板：
+
+```text
+stat KawaiiPhysicsBaker
+```
+
+面板显示动作映射、代理采样、完整校验、快照、节点求值、骨链求解的 CPU 周期统计，以及每帧求解调用数、骨链点数和实际迭代数。计数累计所有实例；节点求值仍包含输入 Pose 开销，求解是其子项。
+
+完整采集示例（开始前确保没有正在写入的其他 Trace，并使用新的输出文件名）：
+
+```text
+Trace.File D:/UEProject/RPGProject/Saved/Profiling/KawaiiBaker/Attack.utrace cpu,counters,frame,bookmark
+Trace.Bookmark KawaiiAttackBegin
+```
+
+执行攻击／落地或烘焙操作，结束后输入：
+
+```text
+Trace.Bookmark KawaiiAttackEnd
+Trace.Stop
+```
+
+也可启动时传入 `-trace=cpu,counters,frame,bookmark -tracefile=<绝对路径>.utrace`。采集后用同版本 Unreal Insights 打开文件。Counters 面板的 `KawaiiBaker/Proxy/InputSamples`、`ActiveSamples`、`Bones`、`Capsules` 表示**最后一次游戏线程采样调用**的负载，不是所有角色之和；`KawaiiBaker/Correction/*LastSnapshot` 是最后一个节点的配置快照。同帧多角色会更新这些共享 gauges，应结合对应 CPU 事件位置读取。
+
+需要进一步拆分求解器内部时，开启：
+
+```text
+a.KawaiiPhysicsBaker.ProfileSolverDetails 1
+```
+
+这会记录每次迭代的 `LengthConstraints`、`PointContacts`、`SegmentContacts`、`FinalPointContacts`，默认值为 `0`。详细探针本身有开销，定位后设回 `0` 再测整体预算。未启用对应 Trace 通道时不会写入事件；Shipping 是否保留探针取决于引擎的 Trace／Stats 编译选项。以上探针测 CPU 耗时，不代表 GPU 渲染或布料求解耗时。
 
 ## 常见问题
 
