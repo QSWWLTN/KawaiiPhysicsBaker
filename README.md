@@ -19,9 +19,9 @@ Kawaii Physics Baker 用于在 Unreal Editor 中预览并烘焙 KawaiiPhysics �
 
 ### 1. 创建烘焙蓝图
 
-在关卡编辑器选择 **Tools → Create Kawaii Physics Bake Blueprint**，选取目标 Skeletal Mesh，再保存蓝图，例如 `ABP_KawaiiBake_Body`。
+在关卡编辑器选择 **Tools → 创建 Kawaii 物理烘焙蓝图**，选取目标 Skeletal Mesh，再保存蓝图，例如 `ABP_KawaiiBake_Body`。
 
-工厂会设置对应的 Skeleton、预览 Mesh 和 `KawaiiPhysicsBakeAnimInstance` 父类，创建 `Bake Source Pose → Output Pose`，并打开 **Kawaii Physics Bake** 面板。以后可通过该蓝图工具栏的 **Physics Bake** 按钮重新打开。
+工厂会设置对应的 Skeleton、预览 Mesh 和 `KawaiiPhysicsBakeAnimInstance` 父类，创建 `Bake Source Pose → Output Pose`，并打开 **Kawaii 物理烘焙** 面板。以后可通过该蓝图工具栏的 **物理烘焙** 按钮重新打开。
 
 ### 2. 配置 AnimGraph
 
@@ -41,7 +41,7 @@ Bake Source Pose
 
 ### 3. 选择动画并预览
 
-在 **Physics Bake** 面板设置：
+在 **物理烘焙** 面板设置：
 
 | 参数 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -52,13 +52,21 @@ Bake Source Pose
 | Output Directory | `/Game/KawaiiBakes` | Unreal 内容目录，不是磁盘路径 |
 | Output Prefix | `Baked` | 输出资产名前缀，必须是非空的合法资产名 |
 
-点击 **Compile & Play** 编译主图和所有部件图，执行预热并预览完整动作。也可以双击面板底部的动画列表，直接设置 Source Animation 并开始预览。
+左侧 **物理预览** 直接显示身体和全部衣物部件的最终物理姿态，无需导出动画。配置完整时打开面板会自动预览；修改源动画、采样或部件设置后会重新预览。也可以点击 **编译并预览** 编译主图和所有部件图，从预热开始播放，或双击右侧动画列表切换动作。
 
-预览播放一遍后停止。每次预览和烘焙都会重新创建模拟并从预热开始；修改图后重新点击 **Compile & Play**。
+视口下方提供动画时间轴、当前时间、帧号和缓存帧数：
+
+- **拖动时间轴**：暂停并显示指定帧。拖动期间视口会持续刷新，已缓存的帧立即显示；尚未计算的帧按固定步长继续模拟，状态栏显示准备进度。继续拖动可以改变目标位置。
+- **播放／暂停**：继续播放或暂停，保留当前物理姿态；在末帧点击 Play 会从头播放。
+- **`|<` / `<` / `>` / `>|`**：跳到首帧、上一帧、下一帧、末帧。跳到尚未缓存的末帧会先补算整个动作。
+- **循环**：默认开启，播放完毕后循环回放本次缓存；关闭后停在末帧。
+- **聚焦角色**：重新把角色放入视野，可配合旋转、缩放视口检查穿模。
+
+时间轴缓存仅保存在内存中，不创建动画资产。修改或重新编译参与的图、修改源动画会使旧缓存失效；修改图后点击 **编译并预览** 重新生成预览。烘焙时视口同样显示当前采样姿态，时间轴禁止拖动，导出始终从全新的预热状态开始。
 
 ### 4. 导出动画
 
-点击 **Bake New Animations**，等待状态显示 `Saved ... synchronized animations`，然后点击 **Find Results** 在内容浏览器中选中结果。
+点击 **烘焙新动画**，等待状态显示 `已保存 … 条同步动画`，然后点击 **定位结果** 在内容浏览器中选中结果。
 
 输出会自动保存，例如：
 
@@ -70,11 +78,11 @@ Bake Source Pose
 
 | 按钮 | 行为 |
 | --- | --- |
-| Compile & Play | 编译全部参与的图，从预热开始预览 |
-| Reset | 重建预览场景并复位，不自动播放或编译 |
-| Bake New Animations | 编译全部图，从头模拟并生成动画 |
-| Stop / Cancel | 停止当前操作，丢弃尚未导出的采样 |
-| Find Results | 定位当前会话生成的动画资产 |
+| 编译并预览 | 编译全部参与的图，从预热开始预览 |
+| 重置 | 重建预览场景并复位，不自动播放或编译 |
+| 烘焙新动画 | 编译全部图，从头模拟并生成动画 |
+| 停止／取消 | 停止当前操作，丢弃尚未导出的采样 |
+| 定位结果 | 定位当前会话生成的动画资产 |
 
 采样期间保持烘焙面板打开。关闭面板会取消任务；修改源动画或重新编译参与的图也会使当前采样失效，需要重新开始。
 
@@ -202,7 +210,7 @@ Bake Source Pose
 
 | 现象 / 提示 | 处理方式 |
 | --- | --- |
-| 看不到 Physics Bake 按钮 | 通过 Tools 菜单创建专用烘焙蓝图；普通 AnimBP 不会显示此按钮 |
+| 看不到 物理烘焙 按钮 | 通过 Tools 菜单创建专用烘焙蓝图；普通 AnimBP 不会显示此按钮 |
 | `Select a Main Mesh and Source Animation` | 在面板补齐 Main Mesh 和 Source Animation |
 | `uncontrolled animation player` / `exactly one connected Bake Source Pose` | 删除普通播放器，确保只有一个 Bake Source Pose 且实际参与输出求值 |
 | `Bake Source Pose was not evaluated` | 检查断线、混合权重或绕开源节点的分支 |
@@ -211,4 +219,4 @@ Bake Source Pose
 | `shared collision registry is unavailable` | 启用插件后完整重启编辑器 |
 | Output Directory 无效 | 使用 `/Game/KawaiiBakes` 一类已注册的内容路径；不能填 `D:\...` 或 Engine 内容目录 |
 | 动画开始时物理未稳定 | 增加 Warm Up Frames，并重新预览；它会在动作起始姿态上预热 |
-| 预览耗时与动画时长不同 | 每个编辑器帧最多推进一个固定模拟步，墙钟耗时取决于编辑器帧率和图的复杂度 |
+| 预览耗时与动画时长不同 | 预览按采样率控制播放节奏，但每个编辑器帧最多推进一个固定模拟步，以保持共享碰撞时序；编辑器帧率低于采样率时会放慢。首次跳到未缓存位置还需要预热和顺序补算 |

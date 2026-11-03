@@ -1,9 +1,5 @@
 #include "KawaiiPhysicsBakeSession.h"
 
-#include "KawaiiPhysicsBakeSampling.h"
-#include "KawaiiPhysicsBakeBlueprint.h"
-#include "KawaiiPhysicsBakeAnimInstance.h"
-#include "AnimNode_KawaiiPhysicsBakeSource.h"
 #include "AnimNode_KawaiiPhysics.h"
 #include "KawaiiPhysicsClothingCollisionComponent.h"
 #include "KawaiiPhysicsClothingCollisionProfile.h"
@@ -33,10 +29,22 @@
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
 
+#include "KawaiiPhysicsBakeSampling.h"
+#include "KawaiiPhysicsBakePreviewComponent.h"
+#include "KawaiiPhysicsBakeBlueprint.h"
+#include "KawaiiPhysicsBakeAnimInstance.h"
+#include "AnimNode_KawaiiPhysicsBakeSource.h"
+
 #define LOCTEXT_NAMESPACE "KawaiiPhysicsBakeSession"
 
 struct FKawaiiPhysicsBakeSession::FPart
 {
+	struct FPreviewPose {
+		TArray<FTransform3f> Bones;
+		TMap<FName, float> MaterialCurves;
+		TMap<FName, float> MorphCurves;
+	};
+	TArray<FPreviewPose> PreviewPoses;
 	FName Name;
 	TObjectPtr<USkeletalMesh> Mesh = nullptr;
 	TObjectPtr<UAnimBlueprint> Graph = nullptr;
@@ -54,8 +62,7 @@ struct FKawaiiPhysicsBakeSession::FPart
 	TMap<FName, TArray<FRichCurveKey>> Curves;
 };
 
-namespace
-{
+namespace {
 	FGuid ReadCachedAnimationDataGuid(const UAnimSequence* Animation) {
 		// UE 5.5 still maintains this cached guid on model edits. Generating a new
 		// model hash here would walk every track on every simulation frame.
@@ -69,30 +76,30 @@ namespace
 			|| !Mesh
 			|| !Mesh->GetSkeleton())
 		{
-			Error = TEXT("Each component needs a mesh with a Skeleton and a bake Anim Blueprint.");
+			Error = TEXT("每个部件都需要带有骨架的骨骼网格体，以及对应的烘焙动画蓝图。");
 			return false;
 		}
 		if (Graph->Status != BS_UpToDate && Graph->Status != BS_UpToDateWithWarnings) {
-			Error = FString::Printf(TEXT("Compile %s successfully before baking; stale generated classes are not accepted."), *Graph->GetName());
+			Error = FString::Printf(TEXT("请先成功编译 %s，再进行预览或烘焙。"), *Graph->GetName());
 			return false;
 		}
 		if (!Graph->GeneratedClass
 			|| !Graph->GeneratedClass->IsChildOf(UKawaiiPhysicsBakeAnimInstance::StaticClass())
 			|| Graph->TargetSkeleton != Mesh->GetSkeleton())
 		{
-			Error = FString::Printf(TEXT("%s must inherit KawaiiPhysicsBakeAnimInstance and target this component's Skeleton."), *Graph->GetName());
+			Error = FString::Printf(TEXT("%s 必须继承 KawaiiPhysicsBakeAnimInstance，并使用该部件的骨架。"), *Graph->GetName());
 			return false;
 		}
 		const IAnimClassInterface* Interface = IAnimClassInterface::GetFromClass(Graph->GeneratedClass);
 		if (!Interface) {
-			Error = TEXT("Missing compiled animation class interface.");
+			Error = TEXT("缺少已编译的动画类接口。");
 			return false;
 		}
 		int32 Sources = 0;
 		for (const FStructProperty* Property : Interface->GetAnimNodeProperties()) {
 			Sources += Property->Struct->IsChildOf(FAnimNode_KawaiiPhysicsBakeSource::StaticStruct()) ? 1 : 0;
 			if (Property->Struct->IsChildOf(FAnimNode_AssetPlayerBase::StaticStruct())) {
-				Error = FString::Printf(TEXT("%s contains an uncontrolled animation player. Use Bake Source Pose as its animation source."), *Graph->GetName());
+				Error = FString::Printf(TEXT("%s 包含不受烘焙工具控制的动画播放器，请使用 Bake Source Pose 作为动画源。"), *Graph->GetName());
 				return false;
 			}
 			if (Property->Struct->IsChildOf(FAnimNode_KawaiiPhysics::StaticStruct())) {
@@ -102,7 +109,7 @@ namespace
 					|| Node->CustomExternalForces.Num())
 				{
 					Error = FString::Printf(
-						TEXT("%s uses world collision, scene wind or a custom Blueprint force. The isolated bake scene has no gameplay world; use explicit collision limits and graph-local forces."),
+						TEXT("%s 使用了世界碰撞、场景风力或自定义蓝图外力。请在烘焙图中改用明确的碰撞约束和图内外力。"),
 						*Graph->GetName());
 					return false;
 				}
@@ -116,7 +123,7 @@ namespace
 						|| !FMath::IsFinite(Force->RandomForceScaleRange.Max)
 						|| Force->RandomForceScaleRange.Min != Force->RandomForceScaleRange.Max)
 					{
-						Error = FString::Printf(TEXT("%s uses a wind or randomized external force. Disable it or use a constant Random Force Scale Range to keep Preview and Bake repeatable."),
+						Error = FString::Printf(TEXT("%s 使用了风力或随机外力。请关闭它，或将 Random Force Scale Range 两端设为相同值，确保预览与烘焙可重复。"),
 												*Graph->GetName());
 						return false;
 					}
@@ -124,7 +131,7 @@ namespace
 			}
 		}
 		if (Sources != 1) {
-			Error = FString::Printf(TEXT("%s must have exactly one connected Bake Source Pose node (found %d)."), *Graph->GetName(), Sources);
+			Error = FString::Printf(TEXT("%s 必须有且仅有一个接入输出路径的 Bake Source Pose 节点（当前为 %d 个）。"), *Graph->GetName(), Sources);
 			return false;
 		}
 		return true;
@@ -135,13 +142,13 @@ namespace
 			return true;
 		}
 		if (Animation->GetSkeleton() != Mesh->GetSkeleton() || Animation->IsValidAdditive()) {
-			Error = FString::Printf(TEXT("%s must be a non-additive sequence on %s's Skeleton. Copy Pose supports separate skeletons; direct sequence playback does not retarget."),
+			Error = FString::Printf(TEXT("%s 必须为使用 %s 骨架的非叠加动画。不同骨架可使用姿态复制，直接播放动画不进行重定向。"),
 									*Animation->GetName(),
 									*Mesh->GetName());
 			return false;
 		}
 		if (!FMath::IsNearlyEqual(Animation->GetPlayLength(), Length, 1.e-4f)) {
-			Error = FString::Printf(TEXT("%s has a different length from the main sequence. All explicit part sequences must use the same timeline."), *Animation->GetName());
+			Error = FString::Printf(TEXT("%s 与主动画时长不同。所有直接指定的部件动画必须使用相同的时间轴。"), *Animation->GetName());
 			return false;
 		}
 		return true;
@@ -150,7 +157,7 @@ namespace
 
 FKawaiiPhysicsBakeSession::FKawaiiPhysicsBakeSession()
 	: PreviewScene(MakeUnique<FAdvancedPreviewScene>(FPreviewScene::ConstructionValues().SetCreatePhysicsScene(true).ShouldSimulatePhysics(false))),
-	  Status(LOCTEXT("Idle", "Choose a source animation, then Preview or Bake.")) {
+	  Status(LOCTEXT("Idle", "请选择源动画，然后预览或烘焙。")) {
 	PreviewScene->SetFloorVisibility(false, true);
 }
 
@@ -165,6 +172,11 @@ bool FKawaiiPhysicsBakeSession::Initialize(UAnimBlueprint* InBlueprint, FString&
 
 void FKawaiiPhysicsBakeSession::ClearScene() {
 	bRunning = false;
+	bPreviewAvailable = bPreviewPaused = false;
+	PreviewAccumulator = 0.0;
+	DisplayedSample = SeekTarget = INDEX_NONE;
+	WarmUpIndex = SampleIndex = IntervalCount = 0;
+	SourceLength = 0.f;
 	for (const TUniquePtr<FPart>& Part : Parts) {
 		if (IAnimationDataModel* Model = Cast<IAnimationDataModel>(Part->InputDataModel.Get())) {
 			Model->GetModifiedEvent().Remove(Part->InputModelChangeHandle);
@@ -190,7 +202,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 		|| !SourceSettings->MainMesh
 		|| !SourceSettings->SourceAnimation)
 	{
-		OutError = TEXT("Select a Main Mesh and Source Animation in Bake Settings.");
+		OutError = TEXT("请在烘焙设置中选择主骨骼网格体和源动画。");
 		return false;
 	}
 	Settings = DuplicateObject<UKawaiiPhysicsBakeSettings>(SourceSettings, GetTransientPackage());
@@ -200,7 +212,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 	GetWorld()->RealTimeSeconds = 0.0;
 	GetWorld()->AudioTimeSeconds = 0.0;
 	if (!GetWorld()->GetSubsystem<UKawaiiPhysicsSharedCollisionSubsystem>()) {
-		OutError = TEXT("The preview world's Kawaii shared collision registry is unavailable. Restart the editor after enabling the baker plugin.");
+		OutError = TEXT("预览场景的 Kawaii 共享碰撞服务不可用。请启用烘焙插件并重启编辑器。");
 		return false;
 	}
 	if (Settings->SampleRate < 1
@@ -208,7 +220,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 		|| Settings->WarmUpFrames < 0
 		|| Settings->WarmUpFrames > 3600)
 	{
-		OutError = TEXT("Sample Rate must be 1-240, and Warm Up Frames must be 0-3600.");
+		OutError = TEXT("采样帧率应为 1–240，预热帧数应为 0–3600。");
 		return false;
 	}
 	SourceLength = Settings->SourceAnimation->GetPlayLength();
@@ -216,7 +228,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 		|| SourceLength <= 0.f
 		|| SourceLength > 600.f)
 	{
-		OutError = TEXT("The source sequence must have a finite duration between zero and 600 seconds.");
+		OutError = TEXT("源动画时长必须大于 0 且不超过 600 秒。");
 		return false;
 	}
 	FixedDelta = 1.f / Settings->SampleRate;
@@ -235,7 +247,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 	Indices.Add(TEXT("Main"), 0);
 	for (const FKawaiiPhysicsBakePart& Definition : Settings->Parts) {
 		if (Definition.Name.IsNone() || Indices.Contains(Definition.Name)) {
-			OutError = TEXT("Parts require unique non-empty names; Main is reserved.");
+			OutError = TEXT("部件名称不能为空或重复；Main 为主部件保留名称。");
 			return false;
 		}
 		TUniquePtr<FPart> Part = MakeUnique<FPart>();
@@ -247,7 +259,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 		if (!Definition.Animation) {
 			const int32* SourceIndex = Indices.Find(Definition.CopyPoseFrom);
 			if (!SourceIndex) {
-				OutError = FString::Printf(TEXT("%s: Copy Pose From must reference Main or an earlier part. Forward and cyclic dependencies are not supported."), *Definition.Name.ToString());
+				OutError = FString::Printf(TEXT("%s：姿态来源必须为 Main 或列表中更早的部件，不支持向后引用或循环依赖。"), *Definition.Name.ToString());
 				return false;
 			}
 			Part->CopySourceIndex = *SourceIndex;
@@ -262,19 +274,19 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 			return false;
 		}
 		if (!KawaiiPhysicsBakeSampling::IsValidTransform(Part->RelativeTransform)) {
-			OutError = Part->Name.ToString() + TEXT(": Relative Transform must be finite, normalized and have positive nonzero scale.");
+			OutError = Part->Name.ToString() + TEXT("：相对变换必须有效，旋转需归一化，缩放必须为正且非零。");
 			return false;
 		}
 		const int32 NumBones = Part->Mesh->GetRefSkeleton().GetRawBoneNum();
 		if (!NumBones) {
-			OutError = Part->Name.ToString() + TEXT(": Mesh has no real bones.");
+			OutError = Part->Name.ToString() + TEXT("：网格体没有真实骨骼。");
 			return false;
 		}
 		Part->CompiledClass = Part->Graph->GeneratedClass;
 		if (Part->Animation) {
 			IAnimationDataModel* Model = Part->Animation->GetDataModel();
 			if (!Model) {
-				OutError = Part->Name.ToString() + TEXT(": Source animation has no editable data model.");
+				OutError = Part->Name.ToString() + TEXT("：源动画没有可编辑的数据模型。");
 				return false;
 			}
 			Part->InputDataModel = Part->Animation->GetDataModelInterface().GetObject();
@@ -297,13 +309,13 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 		TotalBones += NumBones;
 	}
 	if (TotalBones * int64(IntervalCount + 1) > 4000000) {
-		OutError = TEXT("This take exceeds four million bone samples. Reduce the duration, rate or number of parts.");
+		OutError = TEXT("本次采样超过 400 万个骨骼样本，请减少动画时长、采样帧率或部件数量。");
 		return false;
 	}
 	if (Settings->bEnableClothingCollision
 		&& (!Settings->ClothingCollisionProfile || !Indices.Contains(Settings->CollisionSourcePart) || Settings->CollisionSourcePart == TEXT("Main") || Settings->WarmUpFrames < 2))
 	{
-		OutError = TEXT("Clothing Collision requires a profile, an existing source part (not Main), and at least two warm-up frames.");
+		OutError = TEXT("衣物碰撞需要配置资产、已存在的来源部件（不能为 Main），以及至少 2 个预热帧。");
 		return false;
 	}
 	FActorSpawnParameters Spawn;
@@ -311,12 +323,12 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 	Spawn.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	PreviewActor = GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, Spawn);
 	if (!PreviewActor) {
-		OutError = TEXT("Could not create the isolated preview actor.");
+		OutError = TEXT("无法创建独立的预览角色。");
 		return false;
 	}
 	PreviewActor->SetActorTickEnabled(false);
 	for (const TUniquePtr<FPart>& Part : Parts) {
-		USkeletalMeshComponent* Component = NewObject<USkeletalMeshComponent>(PreviewActor, Part->Name, RF_Transient);
+		USkeletalMeshComponent* Component = NewObject<UKawaiiPhysicsBakePreviewComponent>(PreviewActor, Part->Name, RF_Transient);
 		Part->Component = Component;
 		PreviewActor->AddInstanceComponent(Component);
 		Component->SetComponentTickEnabled(false);
@@ -337,7 +349,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 			Instance->SetRootMotionMode(ERootMotionMode::NoRootMotionExtraction);
 			Instance->SetBakeSource(Part->Animation, 0.f, Part->CopySourceIndex == INDEX_NONE ? nullptr : Parts[Part->CopySourceIndex]->Component.Get());
 		} else {
-			OutError = Part->Name.ToString() + TEXT(": Could not initialize the bake Anim Instance.");
+			OutError = Part->Name.ToString() + TEXT("：无法初始化烘焙动画实例。");
 			return false;
 		}
 	}
@@ -360,26 +372,27 @@ bool FKawaiiPhysicsBakeSession::ResetPreview(FString& OutError) {
 		Fail(OutError);
 		return false;
 	}
-	Status = LOCTEXT("Ready", "Ready. Preview and Bake restart from the same warm-up state.");
+	Status = LOCTEXT("Ready", "准备就绪。预览和烘焙均从相同的预热状态开始。");
 	return true;
 }
 
 bool FKawaiiPhysicsBakeSession::StartPreview(FString& OutError) {
 	if (bRunning) {
-		OutError = TEXT("Stop or cancel the current operation first.");
+		OutError = TEXT("请先停止或取消当前操作。");
 		return false;
 	}
 	if (!ResetPreview(OutError)) {
 		return false;
 	}
 	bRunning = true;
-	Status = LOCTEXT("Previewing", "Preview: warming up...");
+	bPreviewAvailable = true;
+	Status = LOCTEXT("Previewing", "预览：正在预热……");
 	return true;
 }
 
 bool FKawaiiPhysicsBakeSession::StartBake(FString& OutError) {
 	if (bRunning) {
-		OutError = TEXT("Stop or cancel the current operation first.");
+		OutError = TEXT("请先停止或取消当前操作。");
 		return false;
 	}
 	if (!ResetPreview(OutError)) {
@@ -394,14 +407,14 @@ bool FKawaiiPhysicsBakeSession::StartBake(FString& OutError) {
 		|| Settings->OutputPrefix.IsEmpty()
 		|| ObjectTools::SanitizeObjectName(Settings->OutputPrefix) != Settings->OutputPrefix)
 	{
-		OutError = TEXT("Output Directory must be a registered package folder such as /Game/KawaiiBakes (not Engine content), and Output Prefix must be a valid non-empty asset name.");
+		OutError = TEXT("输出目录必须为 /Game/KawaiiBakes 等已注册的内容目录，不能使用引擎目录；输出前缀必须为合法且非空的资产名称。");
 		Fail(OutError);
 		return false;
 	}
 	Settings->OutputDirectory.Path = Directory;
 	OutputAssets.Reset();
 	bRunning = bBaking = true;
-	Status = LOCTEXT("Baking", "Bake: warming up; no output assets have been created.");
+	Status = LOCTEXT("Baking", "烘焙：正在预热，尚未创建输出资产。");
 	return true;
 }
 
@@ -410,44 +423,62 @@ void FKawaiiPhysicsBakeSession::StopPreview() {
 		Cancel();
 		return;
 	}
-	bRunning = false;
-	Status = LOCTEXT("Stopped", "Preview stopped. Play restarts with a fresh simulation.");
+	SetPreviewPaused(true);
+	Status = LOCTEXT("Stopped", "预览已暂停。可拖动时间轴，或点击播放继续。");
 }
 
 void FKawaiiPhysicsBakeSession::Cancel() {
 	bRunning = bBaking = false;
+	bPreviewAvailable = bPreviewPaused = false;
+	SeekTarget = INDEX_NONE;
 	for (const TUniquePtr<FPart>& Part : Parts) {
 		Part->Tracks.Reset();
 		Part->Curves.Reset();
+		Part->PreviewPoses.Reset();
 	}
-	Status = LOCTEXT("Cancelled", "Cancelled. Buffered samples discarded; no take was saved.");
+	Status = LOCTEXT("Cancelled", "已取消。采样缓存已丢弃，本次结果未保存。");
 }
 
 void FKawaiiPhysicsBakeSession::Fail(const FString& Error) {
 	bRunning = bBaking = false;
+	bPreviewAvailable = false;
+	SeekTarget = INDEX_NONE;
 	Status = FText::FromString(Error);
 }
 
-bool FKawaiiPhysicsBakeSession::Evaluate(float Time, FString& OutError) {
-	// Only session code advances this world. Mesh ticks are disabled; evaluation is explicitly ordered.
-	GetWorld()->Tick(LEVELTICK_All, FixedDelta);
+bool FKawaiiPhysicsBakeSession::ValidateInputs(FString& OutError) const {
 	for (const TUniquePtr<FPart>& Part : Parts) {
 		if (Part->Animation
 			&& (Part->bInputDataChanged || Part->Animation->GetDataModelInterface().GetObject() != Part->InputDataModel || ReadCachedAnimationDataGuid(Part->Animation) != Part->InputDataGuid || !FMath::IsNearlyEqual(Part->Animation->GetPlayLength(), Part->InputLength, 1.e-6f)))
 		{
 			OutError
-				= Part->Name.ToString() + TEXT(": The source animation was edited during sampling. Restart Preview or Bake so the entire take uses one version of the animation. No output was saved.");
+				= Part->Name.ToString() + TEXT("：采样期间源动画已被修改，请重新开始预览或烘焙。本次结果未保存。");
 			return false;
 		}
 		if (Part->Graph->GeneratedClass != Part->CompiledClass
 			|| (Part->Graph->Status != BS_UpToDate && Part->Graph->Status != BS_UpToDateWithWarnings))
 		{
-			OutError = TEXT("A bake graph changed during sampling. Recompile and restart the take.");
+			OutError = TEXT("采样期间烘焙动画图已发生变化，请重新编译并开始预览或烘焙。");
 			return false;
 		}
+	}
+	return true;
+}
+
+bool FKawaiiPhysicsBakeSession::Evaluate(float Time, FString& OutError) {
+	if (!ValidateInputs(OutError)) {
+		return false;
+	}
+	// Restore the simulation frontier after a cached rewind, before ticking any part.
+	if (bPreviewAvailable && SampleIndex > 0 && DisplayedSample != SampleIndex - 1) {
+		DisplayPreviewPose(SampleIndex - 1);
+	}
+	// Only session code advances this world. Mesh ticks are disabled; evaluation is explicitly ordered.
+	GetWorld()->Tick(LEVELTICK_All, FixedDelta);
+	for (const TUniquePtr<FPart>& Part : Parts) {
 		UKawaiiPhysicsBakeAnimInstance* Instance = Cast<UKawaiiPhysicsBakeAnimInstance>(Part->Component->GetAnimInstance());
 		if (!Instance) {
-			OutError = TEXT("Bake animation instance was replaced during sampling.");
+			OutError = TEXT("采样期间烘焙动画实例已被替换。");
 			return false;
 		}
 		const uint64 PreviousSerial = Instance->GetSourceEvaluationSerial();
@@ -465,11 +496,150 @@ bool FKawaiiPhysicsBakeSession::Evaluate(float Time, FString& OutError) {
 			return false;
 		}
 		if (Instance->GetSourceEvaluationSerial() <= PreviousSerial || !FMath::IsNearlyEqual(Instance->GetLastEvaluatedSourceTime(), Time, 1.e-4f)) {
-			OutError = Part->Name.ToString() + TEXT(": Bake Source Pose was not evaluated at the requested time. Check graph connections and blends that bypass the source.");
+			OutError = Part->Name.ToString() + TEXT("：Bake Source Pose 未在指定时间求值，请检查动画图连线和可能绕过源节点的混合分支。");
 			return false;
 		}
 	}
+	GetWorld()->SendAllEndOfFrameUpdates();
 	return true;
+}
+
+void FKawaiiPhysicsBakeSession::CachePreviewPose() {
+	for (const TUniquePtr<FPart>& Part : Parts) {
+		FPart::FPreviewPose& Pose = Part->PreviewPoses.AddDefaulted_GetRef();
+		for (const FTransform& Bone : Part->Component->GetComponentSpaceTransforms()) {
+			Pose.Bones.Add(FTransform3f(Bone));
+		}
+		Pose.MaterialCurves = Part->Component->GetAnimInstance()->GetAnimationCurveList(EAnimCurveType::MaterialCurve);
+		Pose.MorphCurves = Part->Component->GetAnimInstance()->GetAnimationCurveList(EAnimCurveType::MorphTargetCurve);
+	}
+}
+
+void FKawaiiPhysicsBakeSession::DisplayPreviewPose(int32 Frame) {
+	for (const TUniquePtr<FPart>& Part : Parts) {
+		const FPart::FPreviewPose& Pose = Part->PreviewPoses[Frame];
+		CastChecked<UKawaiiPhysicsBakePreviewComponent>(Part->Component)->DisplayPose(Pose.Bones, Pose.MaterialCurves, Pose.MorphCurves);
+	}
+
+	DisplayedSample = Frame;
+	GetWorld()->SendAllEndOfFrameUpdates();
+}
+
+void FKawaiiPhysicsBakeSession::SetPreviewPaused(bool bPause) {
+	if (!CanScrubPreview()) {
+		return;
+	}
+
+	bPreviewPaused = bPause;
+	SeekTarget = INDEX_NONE;
+	PreviewAccumulator = 0.0;
+	if (!bPause && DisplayedSample >= IntervalCount && SampleIndex > 0) {
+		DisplayPreviewPose(0);
+	}
+}
+
+void FKawaiiPhysicsBakeSession::SeekPreview(int32 Frame) {
+	if (!CanScrubPreview()) {
+		return;
+	}
+
+	FString Error;
+	if (!ValidateInputs(Error)) {
+		Fail(Error);
+		return;
+	}
+	bPreviewPaused = true;
+	PreviewAccumulator = 0.0;
+	SeekTarget = FMath::Clamp(Frame, 0, IntervalCount);
+	if (SeekTarget < SampleIndex) {
+		DisplayPreviewPose(SeekTarget);
+		SeekTarget = INDEX_NONE;
+	}
+}
+
+void FKawaiiPhysicsBakeSession::SetPreviewLooping(bool bLoop) {
+	bLoopPreview = bLoop;
+}
+
+bool FKawaiiPhysicsBakeSession::CanScrubPreview() const {
+	return bPreviewAvailable && !bBaking;
+}
+
+bool FKawaiiPhysicsBakeSession::IsSeeking() const {
+	return SeekTarget != INDEX_NONE;
+}
+
+int32 FKawaiiPhysicsBakeSession::GetPreviewFrame() const {
+	return FMath::Max(0, DisplayedSample);
+}
+
+int32 FKawaiiPhysicsBakeSession::GetRequestedFrame() const {
+	return IsSeeking() ? SeekTarget : GetPreviewFrame();
+}
+
+bool FKawaiiPhysicsBakeSession::IsBaking() const {
+	return bRunning && bBaking;
+}
+
+float FKawaiiPhysicsBakeSession::GetPreviewTime() const {
+	return Settings ? KawaiiPhysicsBakeSampling::SourceTime(GetPreviewFrame(), IntervalCount, SourceLength, Settings->SampleRate) : 0.f;
+}
+
+void FKawaiiPhysicsBakeSession::TickPreview(float DeltaSeconds) {
+	FString Error;
+	// Validate even while paused or replaying: cached poses belong to one graph/source version.
+	if (!ValidateInputs(Error)) {
+		Fail(Error);
+		return;
+	}
+	if (!IsSeeking()) {
+		if (bPreviewPaused) {
+			Status = LOCTEXT("PreviewPaused", "预览已暂停。可拖动时间轴或逐帧检查姿态。");
+			return;
+		}
+		if (DeltaSeconds >= 0.f) {
+			PreviewAccumulator += FMath::Min(DeltaSeconds, 0.25f);
+			if (PreviewAccumulator + 1.e-7 < FixedDelta) {
+				return;
+			}
+			// Shared collision uses engine frame IDs: never evaluate multiple physics steps
+			// in one engine frame or skip simulation samples to catch up after a stall.
+			PreviewAccumulator = FMath::Min(PreviewAccumulator - FixedDelta, static_cast<double>(FixedDelta));
+		}
+		if (DisplayedSample >= IntervalCount) {
+			if (!bLoopPreview) {
+				bPreviewPaused = true;
+				return;
+			}
+			DisplayPreviewPose(0);
+			return;
+		}
+		if (DisplayedSample + 1 < SampleIndex) {
+			DisplayPreviewPose(DisplayedSample + 1);
+			Status = LOCTEXT("CachedPreview", "正在回放已缓存的物理预览，无需导出动画。");
+			return;
+		}
+	}
+	const bool bWarmUp = WarmUpIndex < Settings->WarmUpFrames;
+	const float Time = bWarmUp ? 0.f : KawaiiPhysicsBakeSampling::SourceTime(SampleIndex, IntervalCount, SourceLength, Settings->SampleRate);
+	if (!Evaluate(Time, Error)) {
+		Fail(Error);
+		return;
+	}
+	if (bWarmUp) {
+		++WarmUpIndex;
+		Status = FText::Format(LOCTEXT("PreviewWarmup", "预览预热：{0}/{1} 帧"), WarmUpIndex, Settings->WarmUpFrames);
+		return;
+	}
+
+	CachePreviewPose();
+	DisplayedSample = SampleIndex++;
+	Status = IsSeeking()
+		? FText::Format(LOCTEXT("Seeking", "正在补算物理预览：第 {0}/{1} 帧。已缓存的帧可立即拖动查看。"), DisplayedSample, SeekTarget)
+		: LOCTEXT("LivePreview", "正在实时预览物理效果。拖动时间轴可检查指定帧，点击烘焙将重新模拟并导出。");
+	if (IsSeeking() && DisplayedSample >= SeekTarget) {
+		SeekTarget = INDEX_NONE;
+	}
 }
 
 bool FKawaiiPhysicsBakeSession::Capture(FString& OutError) {
@@ -477,7 +647,7 @@ bool FKawaiiPhysicsBakeSession::Capture(FString& OutError) {
 		const FReferenceSkeleton& Ref = Part->Mesh->GetRefSkeleton();
 		const TArray<FTransform>& ComponentPose = Part->Component->GetComponentSpaceTransforms();
 		if (ComponentPose.Num() < Ref.GetRawBoneNum()) {
-			OutError = Part->Name.ToString() + TEXT(": Final component pose is incomplete.");
+			OutError = Part->Name.ToString() + TEXT("：部件最终姿态不完整。");
 			return false;
 		}
 		for (int32 Bone = 0; Bone < Ref.GetRawBoneNum(); ++Bone) {
@@ -485,7 +655,7 @@ bool FKawaiiPhysicsBakeSession::Capture(FString& OutError) {
 			FTransform Local = Parent == INDEX_NONE ? ComponentPose[Bone] : ComponentPose[Bone].GetRelativeTransform(ComponentPose[Parent]);
 			Local.NormalizeRotation();
 			if (!KawaiiPhysicsBakeSampling::IsValidTransform(Local)) {
-				OutError = FString::Printf(TEXT("%s: Bone %s produced an invalid transform at sample %d."), *Part->Name.ToString(), *Ref.GetBoneName(Bone).ToString(), SampleIndex);
+				OutError = FString::Printf(TEXT("%s：骨骼 %s 在第 %d 个采样处产生了无效变换。"), *Part->Name.ToString(), *Ref.GetBoneName(Bone).ToString(), SampleIndex);
 				return false;
 			}
 			FRawAnimSequenceTrack& Track = Part->Tracks[Bone];
@@ -496,7 +666,7 @@ bool FKawaiiPhysicsBakeSession::Capture(FString& OutError) {
 		const TMap<FName, float>& Values = Part->Component->GetAnimInstance()->GetAnimationCurveList(EAnimCurveType::AttributeCurve);
 		for (const TPair<FName, float>& Value : Values) {
 			if (!FMath::IsFinite(Value.Value)) {
-				OutError = TEXT("A curve contains a non-finite value.");
+				OutError = TEXT("动画曲线包含无效数值。");
 				return false;
 			}
 			if (!Part->Curves.Contains(Value.Key)) {
@@ -517,11 +687,15 @@ bool FKawaiiPhysicsBakeSession::Capture(FString& OutError) {
 	return true;
 }
 
-void FKawaiiPhysicsBakeSession::Tick() {
+void FKawaiiPhysicsBakeSession::Tick(float DeltaSeconds) {
 	if (!bRunning || LastEngineFrame == GFrameCounter) {
 		return;
 	}
 	LastEngineFrame = GFrameCounter;
+	if (bPreviewAvailable) {
+		TickPreview(DeltaSeconds);
+		return;
+	}
 	FString Error;
 	const bool bWarmUp = WarmUpIndex < Settings->WarmUpFrames;
 	const float Time = bWarmUp ? 0.f : KawaiiPhysicsBakeSampling::SourceTime(SampleIndex, IntervalCount, SourceLength, Settings->SampleRate);
@@ -531,7 +705,7 @@ void FKawaiiPhysicsBakeSession::Tick() {
 	}
 	if (bWarmUp) {
 		++WarmUpIndex;
-		Status = FText::Format(LOCTEXT("WarmupProgress", "Warm-up {0}/{1}"), WarmUpIndex, Settings->WarmUpFrames);
+		Status = FText::Format(LOCTEXT("WarmupProgress", "预热：{0}/{1} 帧"), WarmUpIndex, Settings->WarmUpFrames);
 		return;
 	}
 	if (bBaking && !Capture(Error)) {
@@ -539,7 +713,8 @@ void FKawaiiPhysicsBakeSession::Tick() {
 		return;
 	}
 	++SampleIndex;
-	Status = FText::Format(LOCTEXT("SampleProgress", "Sample {0}/{1} at {2} fps"), SampleIndex, IntervalCount + 1, Settings->SampleRate);
+	DisplayedSample = SampleIndex - 1;
+	Status = FText::Format(LOCTEXT("SampleProgress", "采样：{0}/{1} 帧，采样帧率 {2}"), SampleIndex, IntervalCount + 1, Settings->SampleRate);
 	if (SampleIndex > IntervalCount) {
 		bRunning = false;
 		if (bBaking) {
@@ -548,12 +723,14 @@ void FKawaiiPhysicsBakeSession::Tick() {
 				Fail(Error);
 				return;
 			}
-			Status = FText::Format(LOCTEXT("Complete", "Saved {0} synchronized animations ({1} keys, {2} fps). Root bone motion retained; actor stayed stationary."),
-								   OutputAssets.Num(),
-								   SampleIndex,
-								   Settings->SampleRate);
+			Status = FText::Format(
+				LOCTEXT("Complete", "已保存 {0} 条同步动画（{1} 个关键帧，帧率 {2}）。保留根骨骼运动，角色组件保持原位。"),
+				OutputAssets.Num(),
+				SampleIndex,
+				Settings->SampleRate
+			);
 		} else {
-			Status = LOCTEXT("PreviewComplete", "Preview complete. Bake repeats this simulation from a fresh warm-up state.");
+			Status = LOCTEXT("PreviewComplete", "预览完成。烘焙将从全新的预热状态重新模拟。");
 		}
 	}
 }
@@ -568,7 +745,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 			|| FPackageName::DoesPackageExist(PackageName)
 			|| PackageNames.Contains(PackageName))
 		{
-			OutError = TEXT("An output name already exists. No assets were overwritten; start a fresh take.");
+			OutError = TEXT("输出名称已存在，请重新开始烘焙。已有资产未被覆盖。");
 			return false;
 		}
 		PackageNames.Add(PackageName);
@@ -577,7 +754,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 				|| Track.RotKeys.Num() != IntervalCount + 1
 				|| Track.ScaleKeys.Num() != IntervalCount + 1)
 			{
-				OutError = TEXT("The recorded parts do not have matching sample counts. No assets were created.");
+				OutError = TEXT("各部件的采样数量不一致，未创建输出资产。");
 				return false;
 			}
 		}
@@ -590,7 +767,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 			const FName BoneName = MeshRef.GetBoneName(Bone);
 			const int32 SkeletonBone = Skeleton->GetReferenceSkeleton().FindBoneIndex(BoneName);
 			if (SkeletonBone == INDEX_NONE) {
-				OutError = FString::Printf(TEXT("%s: Mesh bone %s is absent from its Skeleton; its baked track cannot be exported."), *Part->Name.ToString(), *BoneName.ToString());
+				OutError = FString::Printf(TEXT("%s：骨架中缺少网格体骨骼 %s，无法导出该骨骼的烘焙轨道。"), *Part->Name.ToString(), *BoneName.ToString());
 				return false;
 			}
 			if (Skeleton->GetBoneTranslationRetargetingMode(SkeletonBone) != EBoneTranslationRetargetingMode::Skeleton) {
@@ -600,11 +777,11 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 			for (int32 Frame = 0; Frame < Part->Tracks[Bone].PosKeys.Num(); ++Frame) {
 				if (!FVector(Part->Tracks[Bone].PosKeys[Frame]).Equals(ReferenceTranslation, 0.01)) {
 					OutError = FString::Printf(
-						TEXT("%s: Bone %s changes local translation at frame %d, but its Skeleton translation retargeting would discard that motion. Use Animation translation retargeting for this "
-							 "bone on the intended bake skeleton, or remove that translation change from the graph. The tool has not modified the Skeleton or created output assets."),
+						TEXT("%s：骨骼 %s 在第 %d 帧改变了局部平移，但骨架的平移重定向设置会丢弃该运动。请将对应骨骼的平移重定向设为 Animation，或移除图中的平移修改。工具未修改骨架或创建输出资产。"),
 						*Part->Name.ToString(),
 						*BoneName.ToString(),
-						Frame);
+						Frame
+					);
 					return false;
 				}
 			}
@@ -626,7 +803,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 		Sequence->bEnableRootMotion = Part.Animation ? Part.Animation->bEnableRootMotion : Settings->SourceAnimation->bEnableRootMotion;
 		Sequence->bForceRootLock = false;
 		IAnimationDataController& Controller = Sequence->GetController();
-		Controller.OpenBracket(LOCTEXT("Populate", "Populate physics bake"), false);
+		Controller.OpenBracket(LOCTEXT("Populate", "写入物理烘焙数据"), false);
 		Controller.InitializeModel();
 		Controller.SetFrameRate(FFrameRate(Settings->SampleRate, 1), false);
 		Controller.SetNumberOfFrames(FFrameNumber(IntervalCount), false);
@@ -659,7 +836,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 		Sequence->MarkPackageDirty();
 		FAssetRegistryModule::AssetCreated(Sequence);
 		if (!bSuccess || Sequence->GetDataModel()->GetNumberOfFrames() != IntervalCount) {
-			OutError = TEXT("Animation data construction failed. New assets remain unsaved for inspection; no existing asset was changed.");
+			OutError = TEXT("动画数据构建失败。新资产尚未保存，可检查后处理；已有资产未修改。");
 			return false;
 		}
 		// Read back the real output using UE's normal retargeting path before saving.
@@ -695,8 +872,8 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 					|| !Actual.GetRotation().Equals(FQuat(Track.RotKeys[Frame]), 0.0001)
 					|| !Actual.GetScale3D().Equals(FVector(Track.ScaleKeys[Frame]), 0.0001))
 				{
-					OutError = FString::Printf(TEXT("%s: Export playback differs from the captured pose on bone %s at frame %d. Check translation retargeting and the mesh reference pose. New "
-													"animations remain unsaved; no existing Skeleton or animation was changed."),
+					OutError = FString::Printf(
+						TEXT("%s：骨骼 %s 在第 %d 帧的导出回放与采样姿态不同，请检查平移重定向和网格体参考姿态。新动画尚未保存，已有骨架和动画未修改。"),
 											   *Part.Name.ToString(),
 											   *Part.Mesh->GetRefSkeleton().GetBoneName(Bone).ToString(),
 											   Frame);
@@ -715,7 +892,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 		Args.bSlowTask = false;
 		if (!UPackage::SavePackage(Sequence->GetPackage(), Sequence, *Filename, Args)) {
 			Sequence->MarkPackageDirty();
-			OutError = FString::Printf(TEXT("Could not save %s. The take is incomplete on disk; all created assets remain available to save manually."), *Filename);
+			OutError = FString::Printf(TEXT("无法保存 %s，本次结果尚未完整写入磁盘。已创建的资产仍可手动保存。"), *Filename);
 			return false;
 		}
 	}

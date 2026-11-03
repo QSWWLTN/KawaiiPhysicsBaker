@@ -39,13 +39,13 @@ namespace KawaiiPhysicsBakerEditor
 		if (!Manager->HasTabSpawner(BakeTabId)) {
 			Manager
 				->RegisterTabSpawner(BakeTabId, FOnSpawnTab::CreateLambda([WeakBP = TWeakObjectPtr<UAnimBlueprint>(Blueprint)](const FSpawnTabArgs&) {
-										 TSharedRef<SDockTab> Tab = SNew(SDockTab).TabRole(ETabRole::PanelTab).Label(LOCTEXT("Tab", "Kawaii Physics Bake"));
+										 TSharedRef<SDockTab> Tab = SNew(SDockTab).TabRole(ETabRole::PanelTab).Label(LOCTEXT("Tab", "Kawaii 物理烘焙"));
 										 if (WeakBP.IsValid()) {
 											 Tab->SetContent(SNew(SKawaiiPhysicsBakePanel, WeakBP.Get()));
 										 }
 										 return Tab;
 									 }))
-				.SetDisplayName(LOCTEXT("Tab", "Kawaii Physics Bake"));
+				.SetDisplayName(LOCTEXT("Tab", "Kawaii 物理烘焙"));
 		}
 		Manager->TryInvokeTab(BakeTabId);
 	}
@@ -133,8 +133,8 @@ private:
 			Extender->AddToolBarExtension("Asset", EExtensionHook::After, nullptr, FToolBarExtensionDelegate::CreateLambda([WeakEditor](FToolBarBuilder& Builder) {
 											  Builder.AddToolBarButton(FUIAction(FExecuteAction::CreateLambda([WeakEditor] { KawaiiPhysicsBakerEditor::OpenBakePanel(WeakEditor); })),
 																	   NAME_None,
-																	   LOCTEXT("Toolbar", "Physics Bake"),
-																	   LOCTEXT("ToolbarHelp", "Open synchronized character preview and bake settings."),
+																	   LOCTEXT("Toolbar", "物理烘焙"),
+																	   LOCTEXT("ToolbarHelp", "打开角色同步预览和物理烘焙设置。"),
 																	   FSlateIcon(FAppStyle::GetAppStyleSetName(), "Persona.StartRecordAnimation"));
 										  }));
 		}
@@ -154,8 +154,8 @@ private:
 			}))
 		);
 		Section.AddMenuEntry("CreateKawaiiBakeBlueprint",
-							 LOCTEXT("Create", "Create Kawaii Physics Bake Blueprint"),
-							 LOCTEXT("CreateHelp", "Create a native animation graph with synchronized multi-mesh physics baking."),
+							 LOCTEXT("Create", "创建 Kawaii 物理烘焙蓝图"),
+							 LOCTEXT("CreateHelp", "创建支持多部件同步预览和物理烘焙的动画蓝图。"),
 							 FSlateIcon(),
 							 FUIAction(FExecuteAction::CreateRaw(this, &FKawaiiPhysicsBakerEditorModule::CreateBakeBlueprint)));
 	}
