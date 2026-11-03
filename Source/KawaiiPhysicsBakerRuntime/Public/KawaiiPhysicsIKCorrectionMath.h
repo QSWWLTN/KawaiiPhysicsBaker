@@ -22,8 +22,10 @@ namespace KawaiiPhysicsIKCorrection {
 		bool bFinite = true;
 	};
 
-	/** Append value-only external proxy capsules atomically; invalid input leaves OutCapsules unchanged. */
-	KAWAIIPHYSICSBAKERRUNTIME_API bool AppendProxyCapsules(const TArray<FKawaiiClothingProxyCapsule>& Proxies, TArray<FCapsule>& OutCapsules);
+	/** Append value-only proxies for one exact chain root. None bypasses filtering; invalid batches leave OutCapsules unchanged. */
+	KAWAIIPHYSICSBAKERRUNTIME_API bool AppendProxyCapsules(const TArray<FKawaiiClothingProxyCapsule>& Proxies,
+															 TArray<FCapsule>& OutCapsules,
+															 FName TargetRootBone = NAME_None);
 
 	/** Blend anchor-relative and driver-relative mappings of the original baked transform. */
 	KAWAIIPHYSICSBAKERRUNTIME_API FTransform WarpTransform(const FTransform& Bone,

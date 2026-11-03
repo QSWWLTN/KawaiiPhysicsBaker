@@ -174,6 +174,11 @@ void SKawaiiPhysicsBakePanel::Construct(const FArguments&, UAnimBlueprint* InBlu
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8, 0, 8, 6)
 		[
+			SNew(STextBlock).AutoWrapText(true)
+			.Text_Lambda([this] { return Session->GetCollisionStatus(); })
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 0, 8, 6)
+		[
 			SNew(SProgressBar).Percent_Lambda([this]() -> TOptional<float> { return Session->GetProgress(); })
 		]
 		+ SVerticalBox::Slot().FillHeight(1.f)

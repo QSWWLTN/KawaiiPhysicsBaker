@@ -26,6 +26,7 @@
 #include "Misc/Crc.h"
 #include "ObjectTools.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "ProfilingDebugging/CountersTrace.h"
 #include "ProfilingDebugging/MiscTrace.h"
 #include "ScopedTransaction.h"
 #include "UObject/MetaData.h"
@@ -38,6 +39,7 @@
 #include "KawaiiClothingProxyPlayback.h"
 #include "KawaiiPhysicsBakeSampling.h"
 #include "KawaiiPhysicsBakePreviewComponent.h"
+#include "KawaiiPhysicsBakePreviewCollision.h"
 #include "KawaiiPhysicsBakeBlueprint.h"
 #include "KawaiiPhysicsBakeAnimInstance.h"
 #include "AnimNode_KawaiiPhysicsBakeSource.h"
@@ -71,6 +73,7 @@ struct FKawaiiPhysicsBakeSession::FPart
 	TObjectPtr<UKawaiiClothingProxyMotionSet> ProxyMotionSet = nullptr;
 	TObjectPtr<UKawaiiClothingProxyMotion> ProxyTake = nullptr;
 	FString ProxyDefinitionSignature;
+	TArray<FName> ProxyIgnoredTargetRoots;
 	uint32 ProxyMotionSetSignature = 0;
 	uint32 ReferenceSkeletonSignature = 0;
 	TArray<FName> ProxyBoneNames;
@@ -220,6 +223,8 @@ void FKawaiiPhysicsBakeSession::ClearScene() {
 	DisplayedSample = SeekTarget = INDEX_NONE;
 	WarmUpIndex = SampleIndex = IntervalCount = 0;
 	SourceLength = 0.f;
+	CollisionStatus = FText::GetEmpty();
+	bPreviewProxyCollisionActive = false;
 	for (const TUniquePtr<FPart>& Part : Parts) {
 		if (IAnimationDataModel* Model = Cast<IAnimationDataModel>(Part->InputDataModel.Get())) {
 			Model->GetModifiedEvent().Remove(Part->InputModelChangeHandle);
@@ -237,7 +242,7 @@ void FKawaiiPhysicsBakeSession::ClearScene() {
 	Settings = nullptr;
 }
 
-bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
+bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 	TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Bake_Prepare);
 	ClearScene();
 	OutError.Reset();
@@ -386,6 +391,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 				}
 			}
 			Part->ProxyDefinitionSignature = Part->ProxyDefinition->ComputeSignature();
+			Part->ProxyIgnoredTargetRoots = Part->ProxyDefinition->IgnoredTargetRootBones;
 			Part->ReferenceSkeletonSignature = ReadReferenceSkeletonSignature(Part->Mesh->GetRefSkeleton());
 			TotalProxyBones += Part->ProxyMeshIndices.Num();
 			if (Part->ProxyMotionSet) {
@@ -415,11 +421,33 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 		OutError = TEXT("本次动画及代理轨道合计超过 400 万个骨骼样本，请减少动画时长、采样帧率、代理骨骼或部件数量。");
 		return false;
 	}
-	if (Settings->bEnableClothingCollision
-		&& (!Settings->ClothingCollisionProfile || !Indices.Contains(Settings->CollisionSourcePart) || Settings->CollisionSourcePart == TEXT("Main") || Settings->WarmUpFrames < 2))
-	{
-		OutError = TEXT("衣物碰撞需要配置资产、已存在的来源部件（不能为 Main），以及至少 2 个预热帧。");
+	// The mode is explicit: StartBake must not inherit a bridge or cached pose from preview.
+	const bool bUsePreviewProxy = !bForBake && Settings->bPreviewClothingProxyCollision;
+	const bool bUseLegacyCollision = !bUsePreviewProxy && Settings->bEnableClothingCollision;
+	int32 CollisionSourceIndex = INDEX_NONE;
+	if (bUsePreviewProxy || bUseLegacyCollision) {
+		const int32* SourceIndex = Indices.Find(Settings->CollisionSourcePart);
+		if (!SourceIndex || *SourceIndex == 0) {
+			OutError = TEXT("碰撞来源部件必须填写已存在的附加部件名称（例如 Base），不能为 Main。");
+			return false;
+		}
+		CollisionSourceIndex = *SourceIndex;
+		if (bUsePreviewProxy && !Parts[CollisionSourceIndex]->ProxyDefinition) {
+			OutError = TEXT("新代理碰撞预览需要为碰撞来源部件指定“衣物代理定义”；代理动作集合或旧碰撞配置不能代替定义。");
+			return false;
+		}
+		if (!KawaiiClothingCollision::IsEnabled()) {
+			OutError = TEXT("衣物碰撞被全局关闭，请将 a.AnimNode.KawaiiPhysics.ClothingCollision.Enabled 设为 1 后重新预览或烘焙。");
+			return false;
+		}
+	}
+	if (bUseLegacyCollision && (!Settings->ClothingCollisionProfile || Settings->WarmUpFrames < 2)) {
+		OutError = TEXT("旧配置碰撞需要衣物碰撞配置资产，以及至少 2 个预热帧。");
 		return false;
+	}
+	if (bUsePreviewProxy) {
+		// Only adjust the transient preview settings; export retains the user's warm-up count.
+		Settings->WarmUpFrames = FMath::Max(Settings->WarmUpFrames, 2);
 	}
 	FActorSpawnParameters Spawn;
 	Spawn.ObjectFlags = RF_Transient;
@@ -456,15 +484,54 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError) {
 			return false;
 		}
 	}
-	if (Settings->bEnableClothingCollision) {
+	if (bUsePreviewProxy || bUseLegacyCollision) {
 		UKawaiiPhysicsClothingCollisionComponent* Bridge = NewObject<UKawaiiPhysicsClothingCollisionComponent>(PreviewActor, NAME_None, RF_Transient);
 		PreviewActor->AddInstanceComponent(Bridge);
 		Bridge->RegisterComponentWithWorld(GetWorld());
-		UKawaiiPhysicsClothingCollisionProfile* Profile = DuplicateObject<UKawaiiPhysicsClothingCollisionProfile>(Settings->ClothingCollisionProfile, Bridge);
+		UKawaiiPhysicsClothingCollisionProfile* Profile = nullptr;
+		if (bUsePreviewProxy) {
+			TArray<FName> AvailableRoots;
+			UAnimInstance* Instance = Parts[0]->Component->GetAnimInstance();
+			const IAnimClassInterface* Interface = IAnimClassInterface::GetFromClass(Instance->GetClass());
+			for (const FStructProperty* Property : Interface->GetAnimNodeProperties()) {
+				if (Property->Struct->IsChildOf(FAnimNode_KawaiiPhysics::StaticStruct())) {
+					const FAnimNode_KawaiiPhysics* Node = Property->ContainerPtrToValuePtr<FAnimNode_KawaiiPhysics>(Instance);
+					AvailableRoots.AddUnique(Node->RootBone.BoneName);
+				}
+			}
+			Profile = NewObject<UKawaiiPhysicsClothingCollisionProfile>(Bridge, NAME_None, RF_Transient);
+			if (!KawaiiPhysicsBakePreviewCollision::BuildProfile(*Parts[CollisionSourceIndex]->ProxyDefinition,
+																  AvailableRoots,
+																	  Settings->PreviewCollisionRootBones,
+																	  *Profile,
+																	  OutError))
+			{
+				return false;
+			}
+			TRACE_INT_VALUE(TEXT("KawaiiBaker/PreviewProxy/Capsules"), Profile->DynamicCapsules.Num());
+			TRACE_INT_VALUE(TEXT("KawaiiBaker/PreviewProxy/Roots"), Profile->TargetRootBones.Num());
+			bPreviewProxyCollisionActive = true;
+			CollisionStatus = FText::Format(
+				LOCTEXT("ProxyCollisionPreview", "新代理碰撞预览：{0} · {1} 个碰撞体 · {2} 组 Main 骨链。仅预览，使用前一采样帧衣物姿态；非运行时 IK 修正。{3}"),
+				FText::FromName(Parts[CollisionSourceIndex]->Name),
+				Profile->DynamicCapsules.Num(),
+				Profile->TargetRootBones.Num(),
+				Settings->bEnableClothingCollision ? LOCTEXT("LegacyExportStillEnabled", "旧配置碰撞仍已开启，将影响导出动画。") : LOCTEXT("PreviewOnlyExport", "导出不包含此预览碰撞。")
+			);
+			if (Profile->TargetRootBones.IsEmpty()) {
+				CollisionStatus = LOCTEXT("AllProxyTargetsIgnored", "衣物代理已忽略全部当前目标骨链：本次预览不接收该代理碰撞。导出仍由旧配置碰撞开关独立控制。");
+			}
+		} else {
+			Profile = DuplicateObject<UKawaiiPhysicsClothingCollisionProfile>(Settings->ClothingCollisionProfile, Bridge);
+			CollisionStatus = LOCTEXT("LegacyCollisionActive", "旧配置碰撞：已启用，将写入导出动画。新代理预览开关不参与烘焙。");
+		}
 		// The bridge ages by wall time. Offline frames may take seconds, but simulation dt stays fixed.
 		Profile->MaxSnapshotAgeSeconds = MAX_flt;
 		Profile->MaxDistance = 0.f;
-		Bridge->Configure(Parts[Indices.FindChecked(Settings->CollisionSourcePart)]->Component, Parts[0]->Component, Profile);
+		Bridge->Configure(Parts[CollisionSourceIndex]->Component, Parts[0]->Component, Profile);
+	} else {
+		CollisionStatus = bForBake ? LOCTEXT("NoExportCollision", "衣物代理碰撞：不参与此次烘焙。已选代理仍会导出运动资产。")
+			: LOCTEXT("NoPreviewCollision", "衣物代理碰撞预览：关闭。仅指定代理定义不会改变当前物理预览。");
 	}
 	return true;
 }
@@ -475,7 +542,7 @@ bool FKawaiiPhysicsBakeSession::ResetPreview(FString& OutError) {
 		Fail(OutError);
 		return false;
 	}
-	Status = LOCTEXT("Ready", "准备就绪。预览和烘焙均从相同的预热状态开始。");
+	Status = LOCTEXT("Ready", "准备就绪。预览和烘焙各自从新的预热状态开始。");
 	return true;
 }
 
@@ -498,7 +565,9 @@ bool FKawaiiPhysicsBakeSession::StartBake(FString& OutError) {
 		OutError = TEXT("请先停止或取消当前操作。");
 		return false;
 	}
-	if (!ResetPreview(OutError)) {
+	bBaking = false;
+	if (!Prepare(OutError, true)) {
+		Fail(OutError);
 		return false;
 	}
 	FString Directory = Settings->OutputDirectory.Path;
@@ -536,6 +605,8 @@ void FKawaiiPhysicsBakeSession::Cancel() {
 	}
 	bRunning = bBaking = false;
 	bPreviewAvailable = bPreviewPaused = false;
+	bPreviewProxyCollisionActive = false;
+	CollisionStatus = FText::GetEmpty();
 	SeekTarget = INDEX_NONE;
 	for (const TUniquePtr<FPart>& Part : Parts) {
 		Part->Tracks.Reset();
@@ -552,6 +623,8 @@ void FKawaiiPhysicsBakeSession::Fail(const FString& Error) {
 	}
 	bRunning = bBaking = false;
 	bPreviewAvailable = false;
+	bPreviewProxyCollisionActive = false;
+	CollisionStatus = FText::GetEmpty();
 	SeekTarget = INDEX_NONE;
 	for (const TUniquePtr<FPart>& Part : Parts) {
 		if (Part->ProxyTake) {
@@ -564,6 +637,10 @@ void FKawaiiPhysicsBakeSession::Fail(const FString& Error) {
 
 bool FKawaiiPhysicsBakeSession::ValidateInputs(FString& OutError) const {
 	for (const TUniquePtr<FPart>& Part : Parts) {
+		if (bPreviewProxyCollisionActive && Part->ProxyDefinition && Part->ProxyDefinition->IgnoredTargetRootBones != Part->ProxyIgnoredTargetRoots) {
+			OutError = Part->Name.ToString() + TEXT("：衣物代理的忽略目标骨链已改变，请重新开始预览以重建碰撞和姿态缓存；无需重新烘焙代理运动。");
+			return false;
+		}
 		if (Part->ProxyMotionSet && ReadProxyMotionSetSignature(Part->ProxyMotionSet) != Part->ProxyMotionSetSignature) {
 			OutError = Part->Name.ToString() + TEXT("：采样期间代理动作集合已改变，请重新开始预览或烘焙。");
 			return false;
@@ -593,6 +670,7 @@ bool FKawaiiPhysicsBakeSession::ValidateInputs(FString& OutError) const {
 
 bool FKawaiiPhysicsBakeSession::Evaluate(float Time, FString& OutError) {
 	TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Bake_EvaluateParts);
+	TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_PreviewProxy_EvaluateParts, bPreviewProxyCollisionActive);
 	if (!ValidateInputs(OutError)) {
 		return false;
 	}

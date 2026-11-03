@@ -53,7 +53,7 @@ public:
 	/** Frame-major local transforms. Includes every ancestor needed to reconstruct the endpoint bones. */
 	UPROPERTY()
 		TArray<FTransform> LocalKeys;
-	/** Immutable geometry copied at bake time; edits to Definition require a rebake. */
+	/** Immutable geometry copied at bake time; geometry edits require a rebake, collision filters do not. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Tracks", meta = (TitleProperty = "Id"))
 		TArray<FKawaiiClothingProxyShape> Shapes;
 
@@ -92,6 +92,9 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FKawaiiClothingProxyCapsule
 		FVector End = FVector::ZeroVector;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Collision")
 		float Radius = 0.f;
+	/** Per-garment rules copied on the game thread; consumers must filter by their target chain root. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Collision")
+		TArray<FName> IgnoredTargetRootBones;
 };
 
 namespace KawaiiClothingProxy {

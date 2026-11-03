@@ -7,18 +7,24 @@
 
 namespace KawaiiPhysicsIKCorrection
 {
-	bool AppendProxyCapsules(const TArray<FKawaiiClothingProxyCapsule>& Proxies, TArray<FCapsule>& OutCapsules) {
+	bool AppendProxyCapsules(const TArray<FKawaiiClothingProxyCapsule>& Proxies, TArray<FCapsule>& OutCapsules, FName TargetRootBone) {
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_AppendProxyCapsules);
 		if (Proxies.Num() > 64 || OutCapsules.Num() + Proxies.Num() > 128) {
 			return false;
 		}
+		// Validate ignored proxies too, so filtering cannot hide malformed input or append a partial batch.
 		for (const FKawaiiClothingProxyCapsule& Proxy : Proxies) {
-			if (Proxy.Start.ContainsNaN() || Proxy.End.ContainsNaN() || !FMath::IsFinite(Proxy.Radius) || Proxy.Radius <= 0.f) {
+			if (Proxy.Start.ContainsNaN() || Proxy.End.ContainsNaN() || !FMath::IsFinite(Proxy.Radius) || Proxy.Radius <= 0.f
+				|| Proxy.IgnoredTargetRootBones.Num() > KawaiiClothingProxy::MaxIgnoredTargetRoots || Proxy.IgnoredTargetRootBones.Contains(NAME_None))
+			{
 				return false;
 			}
 		}
 		OutCapsules.Reserve(OutCapsules.Num() + Proxies.Num());
 		for (const FKawaiiClothingProxyCapsule& Proxy : Proxies) {
+			if (!TargetRootBone.IsNone() && Proxy.IgnoredTargetRootBones.Contains(TargetRootBone)) {
+				continue;
+			}
 			OutCapsules.Add({Proxy.Start, Proxy.End, Proxy.Radius});
 		}
 		return true;

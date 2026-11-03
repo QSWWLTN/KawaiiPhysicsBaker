@@ -353,7 +353,7 @@ void SKawaiiClothingProxyPanel::PropertiesChanged(const FPropertyChangedEvent&) 
 			RefreshMesh();
 		}
 		FString Error;
-		Message = ValidateDefinition(Error) ? TEXT("代理定义有效。保存后重新烘焙使用此定义的代理运动资产。") : Error;
+		Message = ValidateDefinition(Error) ? TEXT("代理定义有效。修改形状或绑定后需重新烘焙；仅修改忽略目标骨链时，保存并重新预览即可，运行时下次采样生效。") : Error;
 	}
 }
 
@@ -415,7 +415,7 @@ FReply SKawaiiClothingProxyPanel::SaveDefinition() {
 		Message = TEXT("代理定义校验通过，但保存失败，请检查文件权限或源代码管理状态。");
 		return FReply::Handled();
 	}
-	Message = FString::Printf(TEXT("已保存 %d 个代理：%s。定义改变后，请重新烘焙关联的代理运动资产。"), Definition->Shapes.Num(), *Definition->GetPathName());
+	Message = FString::Printf(TEXT("已保存 %d 个代理：%s。形状或绑定改变需要重新烘焙；忽略目标骨链无需重新烘焙。"), Definition->Shapes.Num(), *Definition->GetPathName());
 	return BrowseDefinition();
 }
 

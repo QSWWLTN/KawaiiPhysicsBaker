@@ -15,6 +15,7 @@ namespace
 	struct FResolvedChain
 	{
 		TArray<int32> Bones;
+		FName RootName;
 		int32 Anchor = INDEX_NONE;
 		int32 Driver = INDEX_NONE;
 		float Weight = 0.f;
@@ -236,6 +237,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 				}
 			}
 			FResolvedChain& Chain = Chains.AddDefaulted_GetRef();
+			Chain.RootName = Definition.RootBone.BoneName;
 			for (int32 Bone = Tip; Bone != Root; Bone = Parents[Bone]) {
 				Chain.Bones.Insert(Bone, 0);
 			}
@@ -299,10 +301,6 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 				Capsule.Radius = Definition.Radius * FMath::Max(DriverCS[Start].GetScale3D().GetAbsMax(), DriverCS[End].GetScale3D().GetAbsMax());
 			}
 		}
-		if (!KawaiiPhysicsIKCorrection::AppendProxyCapsules(ExternalCapsules, Capsules)) {
-			DebugReason = TEXT("invalid_external_proxy_capsules");
-			return;
-		}
 	}
 
 	TArray<uint8> Affected;
@@ -330,7 +328,15 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 	const float Strength = FMath::Clamp(Alpha, 0.f, 1.f);
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_SolveAndReconstruct);
+		TArray<KawaiiPhysicsIKCorrection::FCapsule> ChainCapsules;
+		ChainCapsules.Reserve(Capsules.Num() + KawaiiClothingProxy::MaxShapes);
 		for (const FResolvedChain& Chain : Chains) {
+			ChainCapsules.Reset();
+			ChainCapsules.Append(Capsules);
+			if (!KawaiiPhysicsIKCorrection::AppendProxyCapsules(ExternalCapsules, ChainCapsules, Chain.RootName)) {
+				DebugReason = TEXT("invalid_external_proxy_capsules");
+				return;
+			}
 			TArray<FVector> Points, ReferencePoints;
 			TArray<double> Lengths;
 			TArray<FTransform> Warped;
@@ -355,7 +361,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 			// Keep the root fixed to the live anchor even when driver and anchor move in opposite directions.
 			Points[0] = ReferencePoints[0];
 			const KawaiiPhysicsIKCorrection::FDiagnostics Diagnostics =
-				KawaiiPhysicsIKCorrection::SolveChain(Points, Lengths, ReferencePoints, Capsules, SnapshotIterations, Chain.Radius);
+				KawaiiPhysicsIKCorrection::SolveChain(Points, Lengths, ReferencePoints, ChainCapsules, SnapshotIterations, Chain.Radius);
 			if (!Diagnostics.bFinite) {
 				DebugReason = TEXT("nonfinite_chain_solution");
 				return;
@@ -386,7 +392,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 				const FVector A = CorrectedCS[Chain.Bones[Index - 1]].GetTranslation();
 				const FVector B = CorrectedCS[Chain.Bones[Index]].GetTranslation();
 				MaxLengthError = FMath::Max(MaxLengthError, FMath::Abs(FVector::Distance(A, B) - Lengths[Index - 1]));
-				for (const KawaiiPhysicsIKCorrection::FCapsule& Capsule : Capsules) {
+				for (const KawaiiPhysicsIKCorrection::FCapsule& Capsule : ChainCapsules) {
 					FVector OnChain, OnCapsule;
 					FMath::SegmentDistToSegmentSafe(A, B, Capsule.Start, Capsule.End, OnChain, OnCapsule);
 					MaxPenetration = FMath::Max(MaxPenetration, Capsule.Radius + Chain.Radius - FVector::Distance(OnChain, OnCapsule));

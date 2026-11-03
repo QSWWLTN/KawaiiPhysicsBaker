@@ -46,7 +46,7 @@ struct KAWAIIPHYSICSBAKER_API FKawaiiPhysicsBakePart
 	UPROPERTY(EditAnywhere,
 			  Category = "代理运动",
 			  meta = (DisplayName = "衣物代理定义",
-					  ToolTip = "可选。选择为此网格体创建的衣物代理；烘焙时额外导出最小骨骼层级、局部变换轨道和代理形状，自动关联本部件动画。"))
+					  ToolTip = "选择为此网格体创建的衣物代理。烘焙时导出代理运动；开启“预览衣物代理碰撞”后，也用于碰撞预览。单独指定本资产不会开启碰撞。"))
 		TObjectPtr<UKawaiiClothingProxyAsset> ProxyDefinition = nullptr;
 
 	UPROPERTY(EditAnywhere,
@@ -101,12 +101,21 @@ public:
 	UPROPERTY(EditAnywhere, Category = "附加部件", meta = (DisplayName = "附加部件", ToolTip = "身体、衣物等独立求值的部件，按列表顺序模拟；姿态来源只能引用更早的部件。", TitleProperty = "Name"))
 		TArray<FKawaiiPhysicsBakePart> Parts;
 
-	/** Enable the project's clothing collision bridge, with Main as the receiving mesh. */
-	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "启用衣物碰撞", ToolTip = "为主部件启用衣物碰撞代理，需要有效配置、来源部件和至少 2 个预热帧。"))
+	/** Uses the new definition only during preview; StartBake always prepares a separate scene. */
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "预览衣物代理碰撞（仅预览）",
+		ToolTip = "预览时使用来源部件的新衣物代理定义，为 Main 的 Kawaii 骨链提供碰撞；不需要旧碰撞配置。采用上一完成帧衣物姿态，不等同于运行时 IK 修正。此开关不影响导出；切换后自动重建预览。"))
+		bool bPreviewClothingProxyCollision = false;
+
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "预览接收骨链", EditCondition = "bPreviewClothingProxyCollision",
+		ToolTip = "可选。填写 Main 中 Kawaii 节点的根骨骼名；留空时自动选择所有已编译的节点。衣物代理定义中的“忽略目标骨链”优先于此列表。此列表仅控制新代理碰撞预览。"))
+		TArray<FName> PreviewCollisionRootBones;
+
+	/** Legacy bridge is independent of the preview-only option and affects exported tracks. */
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "启用旧配置碰撞（写入烘焙）", ToolTip = "使用旧碰撞配置，影响预览和导出动画。新代理预览开启时，预览优先使用新定义；导出仍按此开关处理。需要有效配置、来源部件和至少 2 个预热帧。"))
 		bool bEnableClothingCollision = false;
 
 	/** The name of the part whose final pose supplies the Main mesh's clothing proxy. */
-	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "碰撞来源部件", ToolTip = "为主部件提供衣物碰撞姿态的部件名称，不能为 Main。", EditCondition = "bEnableClothingCollision"))
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "碰撞来源部件", ToolTip = "为 Main 提供碰撞的附加部件名称。新代理预览需要该部件的衣物代理定义；不能为 Main。", EditCondition = "bEnableClothingCollision || bPreviewClothingProxyCollision"))
 		FName CollisionSourcePart = TEXT("Clothing");
 
 	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "衣物碰撞配置", ToolTip = "定义衣物碰撞代理和目标骨链的配置资产。", EditCondition = "bEnableClothingCollision"))

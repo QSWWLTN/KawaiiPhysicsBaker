@@ -40,6 +40,7 @@ public:
 	bool IsRunning() const { return bRunning; }
 	bool IsBaking() const;
 	FText GetStatus() const { return Status; }
+	FText GetCollisionStatus() const { return CollisionStatus; }
 	float GetProgress() const;
 	UWorld* GetWorld() const;
 	FPreviewScene* GetPreviewScene() const;
@@ -50,7 +51,7 @@ public:
 
 private:
 	struct FPart;
-	bool Prepare(FString& OutError);
+	bool Prepare(FString& OutError, bool bForBake = false);
 	bool Evaluate(float SourceTime, FString& OutError);
 	bool ValidateInputs(FString& OutError) const;
 	void CachePreviewPose();
@@ -70,6 +71,7 @@ private:
 	TArray<TObjectPtr<UObject>> CreatedAssets;
 	TArray<TWeakObjectPtr<UObject>> OutputAssets;
 	FText Status;
+	FText CollisionStatus;
 	uint64 LastEngineFrame = MAX_uint64;
 	int32 WarmUpIndex = 0;
 	int32 SampleIndex = 0;
@@ -84,4 +86,5 @@ private:
 	bool bLoopPreview = false;
 	bool bRunning = false;
 	bool bBaking = false;
+	bool bPreviewProxyCollisionActive = false;
 };

@@ -6,6 +6,15 @@
 #include "ReferenceSkeleton.h"
 
 namespace KawaiiClothingProxy {
+	bool ValidateIgnoredTargetRoots(const TArray<FName>& Roots, FString& Error) {
+		Error.Reset();
+		if (Roots.Num() > MaxIgnoredTargetRoots || Roots.Contains(NAME_None)) {
+			Error = FString::Printf(TEXT("衣物代理的忽略目标骨链最多为 %d 项，名称不能为 None。"), MaxIgnoredTargetRoots);
+			return false;
+		}
+		return true;
+	}
+
 	bool ValidateShapes(const TArray<FKawaiiClothingProxyShape>& Shapes, FString& Error) {
 		Error.Reset();
 		if (Shapes.IsEmpty() || Shapes.Num() > MaxShapes) {
@@ -150,6 +159,7 @@ namespace KawaiiClothingProxy {
 }
 
 FString UKawaiiClothingProxyAsset::ComputeSignature() const {
+	// Collision routing is read from the definition each sample and does not change baked geometry or tracks.
 	return KawaiiClothingProxy::ComputeDefinitionSignature(PreviewMesh.ToSoftObjectPath(), Shapes);
 }
 
@@ -159,5 +169,5 @@ bool UKawaiiClothingProxyAsset::Validate(FString& Error) const {
 		Error = TEXT("请为衣物代理选择衣物骨骼网格体。");
 		return false;
 	}
-	return KawaiiClothingProxy::ValidateShapes(Shapes, Error);
+	return KawaiiClothingProxy::ValidateShapes(Shapes, Error) && KawaiiClothingProxy::ValidateIgnoredTargetRoots(IgnoredTargetRootBones, Error);
 }

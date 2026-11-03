@@ -28,6 +28,84 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyContactTest, "KawaiiPhysicsBaker.
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyRootFilterTest, "KawaiiPhysicsBaker.IKCorrection.ProxyRootFiltering", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FKawaiiIKProxyRootFilterTest::RunTest(const FString&) {
+	FKawaiiClothingProxyCapsule Coat;
+	Coat.Id = TEXT("CoatCollar");
+	Coat.Start = Coat.End = FVector::ZeroVector;
+	Coat.Radius = 1.f;
+	Coat.IgnoredTargetRootBones = {TEXT("Tail_Root"), TEXT("Tail_Root")};
+	FKawaiiClothingProxyCapsule Cape = Coat;
+	Cape.Id = TEXT("Cape");
+	Cape.Start = Cape.End = FVector(5, 0, 0);
+	Cape.IgnoredTargetRootBones = {TEXT("Hair_back")};
+	const FCapsule Body{FVector(100, 0, 0), FVector(100, 0, 5), 2.0};
+	TArray<FCapsule> TailCapsules{Body};
+	TArray<FCapsule> HairCapsules{Body};
+	TestTrue(TEXT("Each garment's rules are evaluated for the requested tail root"), AppendProxyCapsules({Coat, Cape}, TailCapsules, TEXT("Tail_Root")));
+	TestTrue(TEXT("The same proxies can be evaluated independently for hair"), AppendProxyCapsules({Coat, Cape}, HairCapsules, TEXT("Hair_back")));
+	if (TestEqual(TEXT("The tail keeps body collision and the other garment's proxy"), TailCapsules.Num(), 2)) {
+		TestTrue(TEXT("Ignoring a garment never removes body collision"),
+				 TailCapsules[0].Start.Equals(Body.Start) && TailCapsules[0].End.Equals(Body.End) && TailCapsules[0].Radius == Body.Radius
+		);
+		TestTrue(TEXT("A different garment can still collide with the tail"), TailCapsules[1].Start.Equals(Cape.Start));
+	}
+	if (TestEqual(TEXT("Hair retains the coat proxy but ignores the cape proxy"), HairCapsules.Num(), 2)) {
+		TestTrue(TEXT("Only the proxy carrying the matching ignore rule is filtered"), HairCapsules[1].Start.Equals(Coat.Start));
+	}
+	TArray<FCapsule> Unfiltered;
+	TestTrue(TEXT("Omitting the root preserves the unfiltered helper contract"), AppendProxyCapsules({Coat, Cape}, Unfiltered));
+	TestEqual(TEXT("None selects every valid proxy"), Unfiltered.Num(), 2);
+
+	TailCapsules.Reset();
+	HairCapsules.Reset();
+	AppendProxyCapsules({Coat}, TailCapsules, TEXT("Tail_Root"));
+	AppendProxyCapsules({Coat}, HairCapsules, TEXT("Hair_back"));
+	const TArray<FVector> Reference{FVector(0, 0, 3), FVector(0.2, 0, 0.2)};
+	const TArray<double> Lengths{FVector::Distance(Reference[0], Reference[1])};
+	TArray<FVector> TailPoints = Reference;
+	TArray<FVector> HairPoints = Reference;
+	const FDiagnostics TailResult = SolveChain(TailPoints, Lengths, Reference, TailCapsules, 64, 0.1);
+	const FDiagnostics HairResult = SolveChain(HairPoints, Lengths, Reference, HairCapsules, 64, 0.1);
+	TestTrue(TEXT("The ignored garment cannot displace the tail or report residual contact"),
+			 TailResult.bFinite && TailPoints[1].Equals(Reference[1], 1.e-8) && TailResult.MaxPenetration == 0.0
+	);
+	TestTrue(TEXT("Hair still corrects against the same garment"),
+			 HairResult.bFinite && !HairPoints[1].Equals(Reference[1], 0.001) && HairResult.MaxPenetration < 0.001
+	);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyFilterValidationTest, "KawaiiPhysicsBaker.IKCorrection.ProxyFilterAtomicValidation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FKawaiiIKProxyFilterValidationTest::RunTest(const FString&) {
+	FKawaiiClothingProxyCapsule Valid;
+	Valid.Id = TEXT("Collar");
+	Valid.Radius = 1.f;
+	const FCapsule Body{FVector(10, 0, 0), FVector(10, 0, 3), 2.0};
+	TArray<FCapsule> Capsules{Body};
+	const auto IsBodyUnchanged = [&Capsules, &Body] {
+		return Capsules.Num() == 1 && Capsules[0].Start.Equals(Body.Start) && Capsules[0].End.Equals(Body.End) && Capsules[0].Radius == Body.Radius;
+	};
+	FKawaiiClothingProxyCapsule Invalid = Valid;
+	Invalid.Radius = -1.f;
+	Invalid.IgnoredTargetRootBones = {TEXT("Tail_Root")};
+	TestFalse(TEXT("Ignoring a proxy cannot hide its invalid geometry"), AppendProxyCapsules({Valid, Invalid}, Capsules, TEXT("Tail_Root")));
+	TestTrue(TEXT("A bad filtered proxy prevents partial addition of earlier valid proxies"), IsBodyUnchanged());
+	Invalid = Valid;
+	Invalid.IgnoredTargetRootBones = {NAME_None};
+	TestFalse(TEXT("None is invalid inside a proxy ignore list"), AppendProxyCapsules({Valid, Invalid}, Capsules, TEXT("Hair_back")));
+	TestTrue(TEXT("Malformed ignore metadata leaves existing body collision untouched"), IsBodyUnchanged());
+	Invalid.IgnoredTargetRootBones.Init(TEXT("Tail_Root"), 65);
+	TestFalse(TEXT("Oversized ignore metadata is rejected even when the root is ignored"), AppendProxyCapsules({Valid, Invalid}, Capsules, TEXT("Tail_Root")));
+	TestTrue(TEXT("Oversized ignore metadata cannot partially append colliders"), IsBodyUnchanged());
+	Valid.IgnoredTargetRootBones.Init(TEXT("Tail_Root"), 64);
+	TestTrue(TEXT("The 64-name bound accepts duplicate nonempty root names"), AppendProxyCapsules({Valid}, Capsules, TEXT("Tail_Root")));
+	TestTrue(TEXT("A fully ignored valid batch leaves body collision in place"), IsBodyUnchanged());
+	return true;
+}
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKWarpTest, "KawaiiPhysicsBaker.IKCorrection.PoseMapping", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKWarpTest::RunTest(const FString&) {
 	const FTransform Bone(FQuat(FVector::YAxisVector, 0.2), FVector(12, 4, -20));
 	const FTransform Anchor(FQuat::Identity, FVector(2, 0, 10));

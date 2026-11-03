@@ -40,10 +40,13 @@ public:
 		TSoftObjectPtr<USkeletalMesh> PreviewMesh;
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Proxy", meta = (DisplayName = "碰撞代理", TitleProperty = "Id"))
 		TArray<FKawaiiClothingProxyShape> Shapes;
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Collision Filtering", meta = (DisplayName = "忽略目标骨链",
+		ToolTip = "这套衣物代理不碰撞的目标骨链，例如 Tail_Root。预览匹配接收方 Kawaii 节点的主根名，运行时匹配 IK Correction 骨链的根名；精确匹配整个节点或骨链，不是衣物自身的代理绑定骨骼。修改规则无需重新烘焙代理运动。"))
+		TArray<FName> IgnoredTargetRootBones;
 
 	/** Deterministic content signature; changing mesh, geometry or bindings invalidates baked motion. */
 	FString ComputeSignature() const;
-	/** Checks geometry and identifiers without loading the soft mesh reference. */
+	/** Checks geometry, identifiers and collision rules without loading the soft mesh reference. */
 	bool Validate(FString& Error) const;
 };
 
@@ -51,7 +54,9 @@ namespace KawaiiClothingProxy {
 	constexpr int32 MaxShapes = 64;
 	constexpr int32 MaxBones = 4096;
 	constexpr int32 MaxKeys = 4000000;
+	constexpr int32 MaxIgnoredTargetRoots = 64;
 
+	KAWAIIPHYSICSBAKERRUNTIME_API bool ValidateIgnoredTargetRoots(const TArray<FName>& Roots, FString& Error);
 	KAWAIIPHYSICSBAKERRUNTIME_API bool ValidateShapes(const TArray<FKawaiiClothingProxyShape>& Shapes, FString& Error);
 	KAWAIIPHYSICSBAKERRUNTIME_API FString ComputeDefinitionSignature(const FSoftObjectPath& Mesh, const TArray<FKawaiiClothingProxyShape>& Shapes);
 	KAWAIIPHYSICSBAKERRUNTIME_API FString ComputeSkeletonSignature(const FReferenceSkeleton& Skeleton);

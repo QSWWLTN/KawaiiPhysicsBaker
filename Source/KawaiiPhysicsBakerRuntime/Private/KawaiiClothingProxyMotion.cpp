@@ -271,6 +271,7 @@ namespace KawaiiClothingProxy {
 				}
 				FKawaiiClothingProxyCapsule& Capsule = Capsules.AddDefaulted_GetRef();
 				Capsule.Id = Shape.Id;
+				Capsule.IgnoredTargetRootBones = First->Definition->IgnoredTargetRootBones;
 				Capsule.Start = ProxyToTarget.TransformPosition(ComponentPose[Start].TransformPosition(Shape.StartOffset));
 				Capsule.End = ProxyToTarget.TransformPosition(ComponentPose[End].TransformPosition(Shape.EndOffset));
 				// Conservative radius for positive non-uniform scale, including both endpoint bindings.

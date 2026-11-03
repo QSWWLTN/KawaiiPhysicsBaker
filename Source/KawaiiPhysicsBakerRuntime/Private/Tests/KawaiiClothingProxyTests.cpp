@@ -200,4 +200,42 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyValidationTest, "KawaiiPhysicsBaker
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyCollisionRulesTest, "KawaiiPhysicsBaker.ClothingProxy.LiveCollisionRules", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FKawaiiProxyCollisionRulesTest::RunTest(const FString&) {
+	UKawaiiClothingProxyMotion* Motion = KawaiiProxyTests::MakeMotion();
+	const FString GeometrySignature = Motion->DefinitionSignature;
+	Motion->Definition->IgnoredTargetRootBones = {TEXT("Tail_Root")};
+	FString Error;
+	TestTrue(TEXT("Target collision rules do not invalidate recorded geometry or tracks"), Motion->Validate(Error));
+	TestEqual(TEXT("Collision rules are independent of the geometry signature"), Motion->Definition->ComputeSignature(), GeometrySignature);
+	TArray<FKawaiiClothingProxyCapsule> Capsules;
+	if (!TestTrue(TEXT("Sampling carries the garment's rules into value-only collision output"),
+				  UKawaiiClothingProxyLibrary::SampleProxyMotion(Motion, 0.f, FTransform::Identity, Capsules, Error)
+	))
+	{
+		AddError(Error);
+		return false;
+	}
+	if (!TestEqual(TEXT("One collision shape is sampled"), Capsules.Num(), 1)) {
+		return false;
+	}
+	const FKawaiiClothingProxyCapsule PreviousFrame = Capsules[0];
+	TestTrue(TEXT("The tail exclusion reaches the animation input"), PreviousFrame.IgnoredTargetRootBones == TArray<FName>({TEXT("Tail_Root")}));
+	Motion->Definition->IgnoredTargetRootBones = {TEXT("Hair_back")};
+	TestTrue(TEXT("Existing motion reads new rules without being rebaked"),
+			 UKawaiiClothingProxyLibrary::SampleProxyMotion(Motion, 0.f, FTransform::Identity, Capsules, Error)
+	);
+	if (Capsules.Num() == 1) {
+		TestTrue(TEXT("The next sample uses the changed rule"), Capsules[0].IgnoredTargetRootBones == TArray<FName>({TEXT("Hair_back")}));
+	}
+	TestTrue(TEXT("Editing the asset cannot mutate a worker's previous value snapshot"), PreviousFrame.IgnoredTargetRootBones == TArray<FName>({TEXT("Tail_Root")}));
+	Motion->Definition->IgnoredTargetRootBones = {NAME_None};
+	TestFalse(TEXT("Malformed collision rules reject sampling"),
+			  UKawaiiClothingProxyLibrary::SampleProxyMotion(Motion, 0.f, FTransform::Identity, Capsules, Error)
+	);
+	TestTrue(TEXT("A rejected rule cannot leave stale output capsules"), Capsules.IsEmpty());
+	return true;
+}
+
 #endif
