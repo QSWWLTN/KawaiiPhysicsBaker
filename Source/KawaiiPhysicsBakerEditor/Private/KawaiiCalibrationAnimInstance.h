@@ -19,6 +19,8 @@ public:
 
 public:
 	int32 GetSimulatedBoneCount() const;
+	/** Counts actual source-pose evaluations, including multiple fixed samples in one engine frame. */
+	uint64 GetSourceEvaluationSerial() const;
 
 public:
 	UPROPERTY(Transient)

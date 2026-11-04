@@ -33,6 +33,8 @@ namespace KawaiiPhysicsIKCorrection
 	namespace
 	{
 		constexpr double DirectionTolerance = 1.e-8;
+		/** A previous point closer than 0.001 cm to the capsule axis carries no usable side. */
+		constexpr double SideTolerance = 1.e-6;
 
 		bool IsFinite(const FVector& Value) {
 			return FMath::IsFinite(Value.X) && FMath::IsFinite(Value.Y) && FMath::IsFinite(Value.Z);
@@ -55,8 +57,20 @@ namespace KawaiiPhysicsIKCorrection
 			return FVector::CrossProduct(N, Seed).GetSafeNormal(DirectionTolerance);
 		}
 
-		FVector ContactNormal(const FVector& Point, const FVector& OnCapsule, const FVector& ReferencePoint, const FCapsule& Capsule, const FVector& ClothSegment) {
+		FVector ContactNormal(const FVector& Point, const FVector& OnCapsule, const FVector& ReferencePoint, const FCapsule& Capsule, const FVector& ClothSegment,
+							  const FVector* SidePoint) {
 			const FVector Delta = Point - OnCapsule;
+			// Keep the side of the capsule this point occupied in the previous solution. Without it a strand
+			// that the input animation carries across the capsule axis is pushed out of the opposite surface,
+			// and the result flips between frames.
+			if (SidePoint) {
+				const FVector SideDelta = *SidePoint - ClosestOnSegment(*SidePoint, Capsule.Start, Capsule.End);
+				if (SideDelta.SizeSquared() > SideTolerance
+					&& (Delta.SizeSquared() <= DirectionTolerance || FVector::DotProduct(Delta, SideDelta) < 0.0))
+				{
+					return SideDelta.GetSafeNormal(DirectionTolerance);
+				}
+			}
 			if (Delta.SizeSquared() > DirectionTolerance) {
 				return Delta.GetSafeNormal(DirectionTolerance);
 			}
@@ -103,20 +117,23 @@ namespace KawaiiPhysicsIKCorrection
 			}
 		}
 
-		void ProjectPoints(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius) {
+		void ProjectPoints(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius,
+						   const TArray<FVector>* SidePoints) {
 			for (int32 Point = 1; Point < Points.Num(); ++Point) {
 				for (const FCapsule& Capsule : Capsules) {
 					const double Radius = Capsule.Radius + ParticleRadius;
 					const FVector OnCapsule = ClosestOnSegment(Points[Point], Capsule.Start, Capsule.End);
 					const double Distance = FVector::Distance(Points[Point], OnCapsule);
 					if (Distance < Radius) {
-						Points[Point] += ContactNormal(Points[Point], OnCapsule, Reference[Point], Capsule, FVector::ZeroVector) * (Radius - Distance);
+						Points[Point] += ContactNormal(Points[Point], OnCapsule, Reference[Point], Capsule, FVector::ZeroVector,
+													   SidePoints ? &(*SidePoints)[Point] : nullptr) * (Radius - Distance);
 					}
 				}
 			}
 		}
 
-		void ProjectSegments(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius) {
+		void ProjectSegments(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius,
+							 const TArray<FVector>* SidePoints) {
 			for (int32 A = 0; A + 1 < Points.Num(); ++A) {
 				const int32 B = A + 1;
 				for (const FCapsule& Capsule : Capsules) {
@@ -140,7 +157,12 @@ namespace KawaiiPhysicsIKCorrection
 					if (Denominator <= DirectionTolerance) {
 						continue;
 					}
-					const FVector Normal = ContactNormal(OnCloth, OnCapsule, FMath::Lerp(Reference[A], Reference[B], T), Capsule, Edge);
+					FVector SidePoint;
+					if (SidePoints) {
+						SidePoint = FMath::Lerp((*SidePoints)[A], (*SidePoints)[B], T);
+					}
+					const FVector Normal = ContactNormal(OnCloth, OnCapsule, FMath::Lerp(Reference[A], Reference[B], T), Capsule, Edge,
+														 SidePoints ? &SidePoint : nullptr);
 					const FVector Correction = Normal * ((Radius - Distance) / Denominator);
 					// A contact arbitrarily close to a pinned root has a tiny
 					// barycentric mass. Bound each projection instead of producing
@@ -188,7 +210,8 @@ namespace KawaiiPhysicsIKCorrection
 	}
 
 	FDiagnostics
-	SolveChain(TArray<FVector>& Points, const TArray<double>& RestLengths, const TArray<FVector>& ReferencePoints, const TArray<FCapsule>& Capsules, int32 Iterations, double ParticleRadius) {
+	SolveChain(TArray<FVector>& Points, const TArray<double>& RestLengths, const TArray<FVector>& ReferencePoints, const TArray<FCapsule>& Capsules, int32 Iterations, double ParticleRadius,
+			   const TArray<FVector>* SidePoints) {
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_SolveChain);
 		SCOPE_CYCLE_COUNTER(STAT_KawaiiBakerSolveChain);
 		FDiagnostics Invalid;
@@ -216,6 +239,15 @@ namespace KawaiiPhysicsIKCorrection
 			}
 		}
 
+		// Side history is optional guidance; a mismatched or non-finite history is ignored rather than rejected.
+		if (SidePoints) {
+			bool bUsable = SidePoints->Num() == Points.Num();
+			for (int32 Index = 0; bUsable && Index < SidePoints->Num(); ++Index) {
+				bUsable = IsFinite((*SidePoints)[Index]);
+			}
+			SidePoints = bUsable ? SidePoints : nullptr;
+		}
+
 		const TArray<FVector> OriginalPoints = Points;
 		const FVector Root = Points[0];
 		const int32 NumIterations = FMath::Clamp(Iterations, 1, 64);
@@ -230,15 +262,15 @@ namespace KawaiiPhysicsIKCorrection
 			}
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_Correction_PointContacts, bDetailedTrace);
-				ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
+				ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius, SidePoints);
 			}
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_Correction_SegmentContacts, bDetailedTrace);
-				ProjectSegments(Points, ReferencePoints, Capsules, ParticleRadius);
+				ProjectSegments(Points, ReferencePoints, Capsules, ParticleRadius, SidePoints);
 			}
 			{
 				TRACE_CPUPROFILER_EVENT_SCOPE_CONDITIONAL(KawaiiBaker_Correction_FinalPointContacts, bDetailedTrace);
-				ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius);
+				ProjectPoints(Points, ReferencePoints, Capsules, ParticleRadius, SidePoints);
 			}
 			Points[0] = Root;
 			bool bFinite = true;

@@ -208,6 +208,17 @@ bool UKawaiiPhysicsCalibrationSettings::ResolveConstraints(FString& OutSource, F
 			return false;
 		}
 	}
+	if (bSearchNodeSettings && !bUseAttachedParentForContacts) {
+		const auto& ClothingRef = ClothingMesh->GetRefSkeleton();
+		for (const auto& Capsule : Resolved) {
+			for (FName Bone : {Capsule.StartBone, Capsule.EndBone.IsNone() ? Capsule.StartBone : Capsule.EndBone}) {
+				if (ClothingRef.FindBoneIndex(Bone) == INDEX_NONE) {
+					OutError = FString::Printf(TEXT("衣物输入缺少身体碰撞骨骼 %s。请补齐衣物输入骨骼，或启用“从挂接人物读取身体碰撞”并确保运行时挂接关系正确。"), *Bone.ToString());
+					return false;
+				}
+			}
+		}
+	}
 	const TArray<FString> Roots = GetChainRootOptions();
 	TSet<FName> Seen;
 	for (const auto& Limit : ChainLimits) {
@@ -230,6 +241,7 @@ bool UKawaiiPhysicsCalibrationSettings::ResolveConstraints(FString& OutSource, F
 }
 
 void UKawaiiPhysicsCalibrationSettings::CopyConstraintsToProfile(UKawaiiPhysicsCalibrationProfile& Profile) const {
+	Profile.bUseAttachedParent = !bSearchNodeSettings || bUseAttachedParentForContacts;
 	Profile.BodyCapsules = BodyCapsules;
 	Profile.ReplacedCollisionBones = ReplacedCollisionBones;
 	Profile.ChainLimits = ChainLimits;

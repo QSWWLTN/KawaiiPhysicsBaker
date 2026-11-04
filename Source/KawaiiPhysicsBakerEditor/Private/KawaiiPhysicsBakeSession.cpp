@@ -1183,6 +1183,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 		Motion->ClearFlags(RF_Transient);
 		Motion->SetFlags(RF_Public | RF_Standalone | RF_Transactional);
 		Motion->BakedAnimation = Sequences[Index];
+		Motion->BodyBakedAnimation = Sequences[0];
 		CreatedAssets.Add(Motion);
 		OutputAssets.Add(Motion);
 		GeneratedMotions[Index] = Motion;

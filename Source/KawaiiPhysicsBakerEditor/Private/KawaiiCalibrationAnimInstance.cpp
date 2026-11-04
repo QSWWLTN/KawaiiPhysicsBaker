@@ -6,8 +6,10 @@
 struct FCalibrationInputPose : FAnimNode_Base
 {
 	TArray<FTransform> Local;
+	uint64 EvaluationSerial = 0;
 
 	virtual void Evaluate_AnyThread(FPoseContext& Output) override {
+		++EvaluationSerial;
 		Output.ResetToRefPose();
 		const auto& Bones = Output.Pose.GetBoneContainer();
 		for (auto I : Output.Pose.ForEachBoneIndex()) {
@@ -65,4 +67,8 @@ void UKawaiiCalibrationAnimInstance::DestroyAnimInstanceProxy(FAnimInstanceProxy
 
 int32 UKawaiiCalibrationAnimInstance::GetSimulatedBoneCount() const {
 	return GetProxyOnGameThread<FCalibrationAnimProxy>().Physics.ModifyBones.Num();
+}
+
+uint64 UKawaiiCalibrationAnimInstance::GetSourceEvaluationSerial() const {
+	return GetProxyOnGameThread<FCalibrationAnimProxy>().Input.EvaluationSerial;
 }

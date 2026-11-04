@@ -13,6 +13,18 @@ class UAnimBlueprint;
 class USkeletalMesh;
 class UAnimGraphNode_KawaiiPhysics;
 
+USTRUCT(meta = (DisplayName = "骨骼约束候选方案"))
+struct FKawaiiCalibrationConstraintPreset
+{
+	GENERATED_BODY()
+	UPROPERTY(EditAnywhere, Category = "骨骼约束", meta = (DisplayName = "方案名称"))
+		FName Name;
+	UPROPERTY(EditAnywhere, Category = "骨骼约束", meta = (DisplayName = "替换原有约束", ToolTip = "只替换候选节点的约束列表，不修改共享约束资产。关闭时追加到原有约束。"))
+		bool bReplaceExisting = false;
+	UPROPERTY(EditAnywhere, Category = "骨骼约束", meta = (DisplayName = "约束骨骼对", TitleProperty = "{Bone1} - {Bone2}"))
+		TArray<FModifyBoneConstraint> Constraints;
+};
+
 USTRUCT(meta = (DisplayName = "可编辑身体碰撞形状"))
 struct FKawaiiCalibrationCollisionShape {
 	GENERATED_BODY()
@@ -86,8 +98,8 @@ public:
 		TObjectPtr<USkeletalMesh> ClothingMesh;
 	UPROPERTY(EditAnywhere, Category = "角色", meta = (DisplayName = "衣物相对变换", ToolTip = "衣物相对于人物组件的位置、旋转和缩放，应与实际挂接关系一致。"))
 		FTransform ClothingTransform = FTransform::Identity;
-	/** 读取一个 Kawaii 节点的原始设置，校准时不执行或修改该蓝图。 */
-	UPROPERTY(EditAnywhere, Category = "角色", meta = (DisplayName = "衣物动画蓝图", ToolTip = "读取其中一个 Kawaii 节点的原始配置。校准过程中不执行或修改此蓝图；已绑定的旧校准配置仅在临时副本中忽略，避免叠加倍率。"))
+	/** 读取一个 Kawaii 节点的原始设置，在独立原生动画图中验证。 */
+	UPROPERTY(EditAnywhere, Category = "角色", meta = (DisplayName = "衣物动画蓝图", ToolTip = "读取其中一个 Kawaii 节点，在独立原生动画图中回放。节点搜索的基准保留原配置；候选使用新配置。搜索过程不修改源蓝图，点击应用后才写回结果。"))
 		TObjectPtr<UAnimBlueprint> ClothingBlueprint;
 	UPROPERTY(EditAnywhere, Category = "角色", meta = (GetOptions = "GetPhysicsRootOptions", DisplayName = "物理根骨骼", ToolTip = "从所选衣物动画蓝图的 Kawaii 节点主根骨骼中选择。None 表示自动选择，仅适用于蓝图中只有一个 Kawaii 节点的情况。"))
 		FName PhysicsRoot;
@@ -100,6 +112,8 @@ public:
 		TArray<FKawaiiCalibrationCollisionShape> CollisionShapes;
 	UPROPERTY(EditAnywhere, Category = "碰撞", meta = (DisplayName = "替换原碰撞的骨骼", ToolTip = "读取时记录原碰撞骨骼，应用后替换这些骨骼上的原生胶囊和外侧球体。删除或禁用形状时保留此列表，防止原碰撞重新生效；设为空则叠加原碰撞。"))
 		TArray<FName> ReplacedCollisionBones;
+	UPROPERTY(EditAnywhere, Category = "碰撞", meta = (DisplayName = "从挂接人物读取身体碰撞", EditCondition = "bSearchNodeSettings", ToolTip = "关闭时使用衣物输入姿态中的同名身体骨骼，适用于独立烘焙部件。开启时读取挂接父级人物，适用于衣物骨架缺少身体骨骼的情况；运行时人物必须是衣物的骨骼父组件并先完成动画更新。旧 GPU 模式固定读取挂接人物。"))
+		bool bUseAttachedParentForContacts = false;
 	UPROPERTY(EditAnywhere, Category = "骨链活动范围", meta = (DisplayName = "骨链活动范围", TitleProperty = "RootBone", ToolTip = "读取所选节点的主根和附加根骨骼；勾选覆盖后调整该骨链。未勾选的项目沿用原节点设置。"))
 		TArray<FKawaiiCalibrationChainLimit> ChainLimits;
 	UPROPERTY(EditAnywhere, Category = "碰撞", meta = (ClampMin = "0", ClampMax = "5", DisplayName = "柔性缓冲距离（厘米）", ToolTip = "在硬碰撞表面外增加柔性缓冲区域，提前推开靠近的衣物骨骼。"))
@@ -112,19 +126,53 @@ public:
 		int32 SampleRate = 60;
 	UPROPERTY(EditAnywhere, Category = "搜索", meta = (ClampMin = "0", ClampMax = "240", DisplayName = "预热帧数", ToolTip = "重置物理后保持片段首帧姿势进行的预热帧数，预热帧不参与评分。"))
 		int32 WarmUpFrames = 30;
-	UPROPERTY(EditAnywhere, Category = "搜索", meta = (ClampMin = "8", ClampMax = "1024", DisplayName = "GPU 候选数量", ToolTip = "GPU 筛选的参数组合总数，包含基准配置。数量越多，搜索范围越充分，计算耗时越长。"))
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索", meta = (DisplayName = "搜索节点参数", ToolTip = "使用真实 CPU 模拟搜索节点参数；保留原始配置作为独立基线。关闭时使用原有 GPU 倍率搜索。"))
+		bool bSearchNodeSettings = true;
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索", meta = (DisplayName = "CPU 搜索候选数", ClampMin = "2", ClampMax = "256", EditCondition = "bSearchNodeSettings", ToolTip = "包含原样基准。先测试单项变化，再采样组合；重复候选会合并，因此实际数量可能较少。"))
+		int32 NativeCandidateCount = 64;
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索", meta = (DisplayName = "搜索 Physics Settings", EditCondition = "bSearchNodeSettings"))
+		bool bSearchPhysicsSettings = true;
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索", meta = (DisplayName = "搜索 Bone Constraints", EditCondition = "bSearchNodeSettings"))
+		bool bSearchBoneConstraints = true;
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Physics Settings", meta = (DisplayName = "阻尼范围", EditCondition = "bSearchNodeSettings && bSearchPhysicsSettings"))
+		FVector2D DampingRange = FVector2D(.1, .6);
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Physics Settings", meta = (DisplayName = "刚度范围", EditCondition = "bSearchNodeSettings && bSearchPhysicsSettings"))
+		FVector2D StiffnessRange = FVector2D(.02, .3);
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Physics Settings", meta = (DisplayName = "骨骼碰撞半径范围（厘米）", EditCondition = "bSearchNodeSettings && bSearchPhysicsSettings"))
+		FVector2D RadiusRange = FVector2D(.5, 3);
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Physics Settings", meta = (DisplayName = "摆动角度范围（度）", ToolTip = "0 表示不限角；范围中的值仍乘原角度曲线。", EditCondition = "bSearchNodeSettings && bSearchPhysicsSettings"))
+		FVector2D LimitAngleRange = FVector2D(35, 110);
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Physics Settings", meta = (DisplayName = "尝试恒定角度曲线", EditCondition = "bSearchNodeSettings && bSearchPhysicsSettings"))
+		bool bTryConstantLimitAngleCurve = true;
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "碰撞前约束迭代候选", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints"))
+		TArray<int32> BeforeCollisionIterations = {1, 3, 5};
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "碰撞后约束迭代候选", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints"))
+		TArray<int32> AfterCollisionIterations = {0, 1};
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "约束柔顺度候选", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints"))
+		TArray<EXPBDComplianceType> ComplianceCandidates = {EXPBDComplianceType::Leather, EXPBDComplianceType::Rubber};
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "纵向细分候选", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints"))
+		TArray<int32> VerticalSubdivisions = {0, 1};
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "横向细分候选", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints"))
+		TArray<int32> HorizontalSubdivisions = {0, 1, 2};
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "横向碰撞反馈范围", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints"))
+		FVector2D FeedbackScaleRange = FVector2D(.5, 1.2);
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "尝试关闭半径自动加密", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints"))
+		bool bTryDisableRadiusDensification = true;
+	UPROPERTY(EditAnywhere, Category = "原生参数搜索|Bone Constraints", meta = (DisplayName = "骨骼配对候选方案", TitleProperty = "Name", EditCondition = "bSearchNodeSettings && bSearchBoneConstraints", ToolTip = "留空仍搜索约束求解参数。骨骼对必须位于当前可动骨链内；不允许自连、重复或固定根端点。"))
+		TArray<FKawaiiCalibrationConstraintPreset> ConstraintPresets;
+	UPROPERTY(EditAnywhere, Category = "搜索", meta = (ClampMin = "8", ClampMax = "1024", DisplayName = "GPU 候选数量", EditCondition = "!bSearchNodeSettings", EditConditionHides, ToolTip = "GPU 筛选的参数组合总数，包含基准配置。数量越多，搜索范围越充分，计算耗时越长。"))
 		int32 CandidateCount = 128;
-	UPROPERTY(EditAnywhere, Category = "搜索", meta = (ClampMin = "1", ClampMax = "16", DisplayName = "CPU 复验候选数量", ToolTip = "从 GPU 筛选结果中选取多少组候选进行原始 Kawaii CPU 模拟验证；基准配置会额外验证。"))
+	UPROPERTY(EditAnywhere, Category = "搜索", meta = (ClampMin = "1", ClampMax = "16", DisplayName = "CPU 复验候选数量", EditCondition = "!bSearchNodeSettings", EditConditionHides, ToolTip = "从 GPU 筛选结果中选取多少组候选进行原始 Kawaii CPU 模拟验证；基准配置会额外验证。"))
 		int32 CPUFinalists = 4;
 	UPROPERTY(EditAnywhere, Category = "搜索", meta = (DisplayName = "随机种子", ToolTip = "控制候选参数采样；相同输入和种子可重复生成同一组候选。"))
 		int32 Seed = 1337;
-	UPROPERTY(EditAnywhere, Category = "搜索", meta = (DisplayName = "阻尼倍率范围", ToolTip = "相对于原始节点阻尼的搜索倍率范围，X 为下限，Y 为上限，范围为 0.1 至 4。"))
+	UPROPERTY(EditAnywhere, Category = "搜索", meta = (DisplayName = "阻尼倍率范围", EditCondition = "!bSearchNodeSettings", EditConditionHides, ToolTip = "相对于原始节点阻尼的搜索倍率范围，X 为下限，Y 为上限，范围为 0.1 至 4。"))
 		FVector2D DampingScaleRange = FVector2D(.5, 2);
-	UPROPERTY(EditAnywhere, Category = "搜索", meta = (DisplayName = "刚度倍率范围", ToolTip = "相对于原始节点刚度的搜索倍率范围，X 为下限，Y 为上限，范围为 0.1 至 4。"))
+	UPROPERTY(EditAnywhere, Category = "搜索", meta = (DisplayName = "刚度倍率范围", EditCondition = "!bSearchNodeSettings", EditConditionHides, ToolTip = "相对于原始节点刚度的搜索倍率范围，X 为下限，Y 为上限，范围为 0.1 至 4。"))
 		FVector2D StiffnessScaleRange = FVector2D(.5, 2);
-	UPROPERTY(EditAnywhere, Category = "搜索", meta = (DisplayName = "骨骼碰撞半径倍率范围", ToolTip = "相对于原始节点骨骼碰撞半径的搜索倍率范围，X 为下限，Y 为上限，范围为 0.25 至 4。"))
+	UPROPERTY(EditAnywhere, Category = "搜索", meta = (DisplayName = "骨骼碰撞半径倍率范围", EditCondition = "!bSearchNodeSettings", EditConditionHides, ToolTip = "相对于原始节点骨骼碰撞半径的搜索倍率范围，X 为下限，Y 为上限，范围为 0.25 至 4。"))
 		FVector2D RadiusScaleRange = FVector2D(.75, 1.5);
-	UPROPERTY(EditAnywhere, Category = "搜索", meta = (ClampMin = "1", ClampMax = "8", DisplayName = "候选碰撞迭代上限", ToolTip = "候选配置允许的最大碰撞求解次数。次数越多，运行时 CPU 开销通常越高；基准配置固定为 2 次。"))
+	UPROPERTY(EditAnywhere, Category = "搜索", meta = (ClampMin = "1", ClampMax = "8", DisplayName = "候选碰撞迭代上限", ToolTip = "候选配置允许的最大接触求解次数。节点搜索保留原配置作为基准；旧 GPU 模式的倍率基准固定为 2 次。"))
 		int32 MaxContactIterations = 4;
 	UPROPERTY(EditAnywhere, Category = "评分", meta = (ClampMin = "0", DisplayName = "穿透惩罚权重", ToolTip = "对碰撞代理穿透深度的评分权重，越大越倾向于减少穿透。"))
 		float PenetrationWeight = 100.f;
@@ -136,9 +184,9 @@ public:
 		float IterationCostWeight = .01f;
 	UPROPERTY(EditAnywhere, Category = "评分", meta = (ClampMin = "0", ClampMax = "512", DisplayName = "蒙皮顶点采样数", ToolTip = "离线 CPU 验证的顶点数，其中最多 128 个可移动接触点用于运行时修正。接触点仅根据训练动作选择。设为 0 时关闭蒙皮接触修正，只验证骨骼代理。"))
 		int32 SkinSampleCount = 512;
-	UPROPERTY(EditAnywhere, Category = "验收", meta = (ClampMin = "0", DisplayName = "最大允许穿透（厘米）", ToolTip = "训练和独立验证片段都必须满足此上限，才会生成可应用配置。存在蒙皮采样时按实际布面验收，否则按固定半径骨骼代理验收；两类数据均保留在报告中。"))
+	UPROPERTY(EditAnywhere, Category = "验收", meta = (ClampMin = "0", DisplayName = "最大允许穿透（厘米）", ToolTip = "训练和独立验证片段均满足此上限才标为通过。未达标的最佳新候选可另行保存试用。存在蒙皮采样时按采样布面验收，否则按固定骨骼代理验收。"))
 		float MaxAcceptedPenetration = .5f;
-	UPROPERTY(EditAnywhere, Category = "验收", meta = (ClampMin = "0", DisplayName = "最大允许骨长误差（厘米）", ToolTip = "限制碰撞推开造成的骨链拉伸，超标时校准失败并保留诊断报告。"))
+	UPROPERTY(EditAnywhere, Category = "验收", meta = (ClampMin = "0", DisplayName = "最大允许骨长误差（厘米）", ToolTip = "限制碰撞推开造成的骨链拉伸。超标时明确标记未达标，并保留候选对比报告。"))
 		float MaxAcceptedLengthError = .5f;
 	UPROPERTY(EditAnywhere, Category = "输出", meta = (DisplayName = "输出目录", ToolTip = "保存测试集和校准配置的内容目录，必须是有效的 /Game 子目录。"))
 		FDirectoryPath OutputDirectory;

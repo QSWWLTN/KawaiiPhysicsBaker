@@ -31,6 +31,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxySerializedPayloadTest, "KawaiiPhysi
 	Original->SourceMesh = Mesh.Get();
 	Original->SourceAnimation = TSoftObjectPtr<UAnimSequence>(FSoftObjectPath(TEXT("/Game/KawaiiProxyTest/Source.Source")));
 	Original->BakedAnimation = TSoftObjectPtr<UAnimSequence>(FSoftObjectPath(TEXT("/Game/KawaiiProxyTest/Baked.Baked")));
+	Original->BodyBakedAnimation = TSoftObjectPtr<UAnimSequence>(FSoftObjectPath(TEXT("/Game/KawaiiProxyTest/Body.Body")));
 	Original->SourceDataGuid = FGuid::NewGuid();
 	Original->SourceSkeletonSignature = KawaiiClothingProxy::ComputeSkeletonSignature(Mesh->GetRefSkeleton());
 	Original->BakeGroup = FGuid::NewGuid();
@@ -75,6 +76,7 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxySerializedPayloadTest, "KawaiiPhysi
 	TestEqual(TEXT("Stable geometry signature survives"), Restored->DefinitionSignature, Original->DefinitionSignature);
 	TestTrue(TEXT("Source action identity survives"), Restored->SourceAnimation.ToSoftObjectPath() == Original->SourceAnimation.ToSoftObjectPath());
 	TestTrue(TEXT("Paired display animation identity survives"), Restored->BakedAnimation.ToSoftObjectPath() == Original->BakedAnimation.ToSoftObjectPath());
+	TestTrue(TEXT("Baked body playback identity survives"), Restored->BodyBakedAnimation.ToSoftObjectPath() == Original->BodyBakedAnimation.ToSoftObjectPath());
 	TestTrue(TEXT("Source revision and group survive"), Restored->SourceDataGuid == Original->SourceDataGuid && Restored->BakeGroup == Original->BakeGroup);
 	TestTrue(TEXT("Reduced hierarchy survives"), Restored->BoneNames == Original->BoneNames && Restored->ParentIndices == Original->ParentIndices);
 	TestEqual(TEXT("Flattened key payload is serialized"), Restored->LocalKeys.Num(), Original->LocalKeys.Num());

@@ -70,4 +70,19 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Correction", meta = (ClampMin = "1", ClampMax = "64"))
 		int32 Iterations = 16;
+
+	/** Each frame starts from the previous corrected chain (relative to its anchor) and returns toward the
+	 * input pose with this time constant before contacts are resolved. Contacts stay on the side they were on
+	 * and are still fully resolved every frame. 0 restores the stateless per-frame solve. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Temporal Stability",
+		meta = (ClampMin = "0", ClampMax = "1", ForceUnits = "s", DisplayName = "接触稳定时间",
+			ToolTip = "每帧从上一帧的修正结果（相对锚点）出发，按此时间常数回到输入姿态后再解算接触；接触保持在原来的一侧，仍每帧完全解算，用于消除逐帧独立解算造成的头发抖动。0 恢复旧的逐帧独立解算。"))
+		float SettleTime = 0.08f;
+
+	/** Exponential smoothing of the final correction offset relative to each chain anchor. 0 disables it.
+	 * Larger values are steadier but leave more residual overlap during fast contact. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Temporal Stability",
+		meta = (ClampMin = "0", ClampMax = "1", ForceUnits = "s", DisplayName = "输出平滑时间",
+			ToolTip = "对最终修正位移（相对骨链锚点）做指数平滑的时间常数；0 关闭。越大越稳定，但快速接触时残余穿插越多。"))
+		float SmoothingTime = 0.03f;
 };

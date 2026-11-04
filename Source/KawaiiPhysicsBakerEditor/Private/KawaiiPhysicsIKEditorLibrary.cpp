@@ -8,6 +8,7 @@
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+#include "KawaiiPhysicsIKProfileGenerator.h"
 
 namespace {
 	UEdGraphPin* FindComponentPosePin(UEdGraphNode* Node, EEdGraphPinDirection Direction) {
@@ -117,4 +118,18 @@ FString UKawaiiPhysicsIKEditorLibrary::GetBlueprintStatus(const UBlueprint* Blue
 
 bool UKawaiiPhysicsIKEditorLibrary::IsBlueprintUpToDate(const UBlueprint* Blueprint) {
 	return IsValid(Blueprint) && Blueprint->IsUpToDate();
+}
+
+UKawaiiPhysicsIKCorrectionProfile* UKawaiiPhysicsIKEditorLibrary::GenerateIKCorrectionProfile(UAnimBlueprint* AnimBlueprint,
+																							 bool bImportBodyCapsules,
+																							 bool bAssignToProxyNodes,
+																							 bool bSave,
+																							 bool bDryRun,
+																							 FString& Report) {
+	KawaiiPhysicsIKProfileGenerator::FOptions Options;
+	Options.bImportBodyCapsules = bImportBodyCapsules;
+	Options.bAssignToProxyNodes = bAssignToProxyNodes;
+	Options.bSave = bSave;
+	Options.bDryRun = bDryRun;
+	return KawaiiPhysicsIKProfileGenerator::Generate(AnimBlueprint, Options, Report);
 }

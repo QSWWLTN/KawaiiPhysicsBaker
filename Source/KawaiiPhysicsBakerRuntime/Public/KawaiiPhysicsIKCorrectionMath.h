@@ -38,6 +38,10 @@ namespace KawaiiPhysicsIKCorrection {
 	/**
 	 * Point zero stays pinned. RestLengths[i] describes edge i -> i+1.
 	 * ReferencePoints supplies deterministic outward directions for degenerate contact.
+	 * Optional SidePoints (same count, usually the previous frame's solution in the current anchor
+	 * frame) keep each contact on the side of the capsule the point occupied before, so a strand the
+	 * input carries across a capsule axis is not pushed out of the opposite surface. A size mismatch
+	 * or non-finite history is ignored.
 	 * Alternates length and point/segment capsule constraints, ending with contacts.
 	 * Conflicting constraints are reported, not silently described as a complete solve.
 	 */
@@ -46,5 +50,6 @@ namespace KawaiiPhysicsIKCorrection {
 														  const TArray<FVector>& ReferencePoints,
 														  const TArray<FCapsule>& Capsules,
 														  int32 Iterations,
-														  double ParticleRadius);
+														  double ParticleRadius,
+														  const TArray<FVector>* SidePoints = nullptr);
 }

@@ -4,6 +4,7 @@
 #include "Animation/AnimInstance.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+#include "Misc/ScopeExit.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "ProfilingDebugging/CountersTrace.h"
 
@@ -12,6 +13,11 @@
 
 namespace
 {
+	/** A longer gap (hitch, pause, teleport-like discontinuity) restarts from a stateless solve. */
+	constexpr float MaxTemporalGapSeconds = 0.25f;
+	/** Upper bound accepted for the profile's temporal time constants. */
+	constexpr float MaxTemporalTimeConstant = 10.f;
+
 	struct FResolvedChain
 	{
 		TArray<int32> Bones;
@@ -41,6 +47,24 @@ namespace
 		return false;
 	}
 
+	float ValidTimeConstant(float Value) {
+		return FMath::IsFinite(Value) ? FMath::Clamp(Value, 0.f, MaxTemporalTimeConstant) : 0.f;
+	}
+
+	/** Re-impose rest lengths from the pinned root outward, keeping each segment's direction. */
+	void RestoreChainLengths(TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FVector>& FallbackPoints) {
+		for (int32 Index = 1; Index < Points.Num(); ++Index) {
+			FVector Direction = Points[Index] - Points[Index - 1];
+			if (!Direction.Normalize(UE_KINDA_SMALL_NUMBER)) {
+				Direction = FallbackPoints[Index] - FallbackPoints[Index - 1];
+				if (!Direction.Normalize(UE_KINDA_SMALL_NUMBER)) {
+					continue;
+				}
+			}
+			Points[Index] = Points[Index - 1] + Direction * Lengths[Index - 1];
+		}
+	}
+
 	bool BuildComponentPose(const FCompactPose& Pose, const TArray<int32>& Parents, TArray<FTransform>& Out) {
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_BuildComponentPose);
 		Out.SetNum(Pose.GetNumBones());
@@ -64,11 +88,25 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Initialize_AnyThread(const FAnimationI
 	GetEvaluateGraphExposedInputs().Execute(Context);
 	BakedPose.Initialize(Context);
 	DriverPose.Initialize(Context);
+	ResetTemporalState();
 }
 
 void FAnimNode_KawaiiPhysicsIKCorrection::CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) {
 	BakedPose.CacheBones(Context);
 	DriverPose.CacheBones(Context);
+	// Compact bone indices may change with LOD; stored solutions refer to the old indices.
+	ResetTemporalState();
+}
+
+void FAnimNode_KawaiiPhysicsIKCorrection::AccumulateDeltaTime(float DeltaTime) {
+	if (FMath::IsFinite(DeltaTime) && DeltaTime > 0.f) {
+		PendingDeltaTime = FMath::Min(PendingDeltaTime + DeltaTime, 1.f);
+	}
+}
+
+void FAnimNode_KawaiiPhysicsIKCorrection::ResetTemporalState() {
+	TemporalStates.Reset();
+	PendingDeltaTime = 0.f;
 }
 
 void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimInstance) {
@@ -81,10 +119,14 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 	SnapshotParentCapsules.Reset();
 	SnapshotError.Reset();
 	bSnapshotUseAttachedParent = false;
+	SnapshotSettleTime = 0.f;
+	SnapshotSmoothingTime = 0.f;
 	if (Profile) {
 		SnapshotChains = Profile->Chains;
 		SnapshotCapsules = Profile->Capsules;
 		SnapshotIterations = Profile->Iterations;
+		SnapshotSettleTime = Profile->SettleTime;
+		SnapshotSmoothingTime = Profile->SmoothingTime;
 		bSnapshotUseAttachedParent = Profile->bUseAttachedParentForCollision;
 	}
 	// Game-thread gauges describe the last node snapshot, not a sum across characters.
@@ -164,6 +206,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 void FAnimNode_KawaiiPhysicsIKCorrection::Update_AnyThread(const FAnimationUpdateContext& Context) {
 	TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_Update);
 	GetEvaluateGraphExposedInputs().Execute(Context);
+	AccumulateDeltaTime(Context.GetDeltaTime());
 	BakedPose.Update(Context);
 	DriverPose.Update(Context);
 }
@@ -176,8 +219,28 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_InputDriverPose);
 		DriverPose.Evaluate(Output);
 	}
+	FPoseContext BakedContext(Output);
+	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_InputBakedPose);
+		BakedPose.Evaluate(BakedContext);
+	}
+	CorrectPose(Output, BakedContext);
+}
+
+void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, const FPoseContext& BakedContext) {
 	MaxPenetration = MaxLengthError = 0.0;
 	DebugReason = TEXT("driver_pose_fallback");
+	// Each solve consumes the time reported since the previous one.
+	const float DeltaTime = PendingDeltaTime;
+	PendingDeltaTime = 0.f;
+	// Every early return emits the uncorrected driver pose; continuing from older history afterwards would pop.
+	bool bWroteCorrection = false;
+	ON_SCOPE_EXIT
+	{
+		if (!bWroteCorrection) {
+			TemporalStates.Reset();
+		}
+	};
 	if (!SnapshotError.IsEmpty()) {
 		DebugReason = SnapshotError;
 		return;
@@ -257,11 +320,6 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 		}
 	}
 
-	FPoseContext BakedContext(Output);
-	{
-		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_InputBakedPose);
-		BakedPose.Evaluate(BakedContext);
-	}
 	if (BakedContext.Pose.GetNumBones() != NumBones) {
 		DebugReason = TEXT("input_pose_bone_count_mismatch");
 		return;
@@ -326,11 +384,27 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 	TArray<uint8> ExplicitTransform;
 	ExplicitTransform.Init(0, NumBones);
 	const float Strength = FMath::Clamp(Alpha, 0.f, 1.f);
+
+	// Temporal stability. History is stored relative to each chain's live anchor, so body motion never lags.
+	const float SettleTime = ValidTimeConstant(SnapshotSettleTime);
+	const float SmoothingTime = ValidTimeConstant(SnapshotSmoothingTime);
+	const bool bTemporalEnabled = SettleTime > 0.f || SmoothingTime > 0.f;
+	if (!bTemporalEnabled || DeltaTime > MaxTemporalGapSeconds) {
+		TemporalStates.Reset();
+	}
+	// Without reported time (direct callers, re-evaluation without update) the solve is stateless and history is kept.
+	const bool bAdvanceHistory = bTemporalEnabled && DeltaTime > 0.f && DeltaTime <= MaxTemporalGapSeconds;
+	const double SettleAlpha = SettleTime > 0.f ? 1.0 - FMath::Exp(-static_cast<double>(DeltaTime) / SettleTime) : 1.0;
+	const double SmoothingAlpha = SmoothingTime > 0.f ? 1.0 - FMath::Exp(-static_cast<double>(DeltaTime) / SmoothingTime) : 1.0;
+	if (bAdvanceHistory && TemporalStates.Num() != Chains.Num()) {
+		TemporalStates.SetNum(Chains.Num());
+	}
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_SolveAndReconstruct);
 		TArray<KawaiiPhysicsIKCorrection::FCapsule> ChainCapsules;
 		ChainCapsules.Reserve(Capsules.Num() + KawaiiClothingProxy::MaxShapes);
-		for (const FResolvedChain& Chain : Chains) {
+		for (int32 ChainIndex = 0; ChainIndex < Chains.Num(); ++ChainIndex) {
+			const FResolvedChain& Chain = Chains[ChainIndex];
 			ChainCapsules.Reset();
 			ChainCapsules.Append(Capsules);
 			if (!KawaiiPhysicsIKCorrection::AppendProxyCapsules(ExternalCapsules, ChainCapsules, Chain.RootName)) {
@@ -360,11 +434,65 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 			}
 			// Keep the root fixed to the live anchor even when driver and anchor move in opposite directions.
 			Points[0] = ReferencePoints[0];
-			const KawaiiPhysicsIKCorrection::FDiagnostics Diagnostics =
-				KawaiiPhysicsIKCorrection::SolveChain(Points, Lengths, ReferencePoints, ChainCapsules, SnapshotIterations, Chain.Radius);
+			// Driver-warped input before contacts: the pose temporal settling and smoothing return to.
+			const TArray<FVector> TargetPoints = Points;
+			const FTransform& AnchorCS = DriverCS[Chain.Anchor];
+			FChainTemporalState* History = bAdvanceHistory ? &TemporalStates[ChainIndex] : nullptr;
+			if (History
+				&& (History->Bones != Chain.Bones || History->Anchor != Chain.Anchor || History->SolvedLocal.Num() != Count
+					|| History->SmoothedOffsetLocal.Num() != Count))
+			{
+				*History = FChainTemporalState();
+			}
+			const bool bHasHistory = History && !History->SolvedLocal.IsEmpty();
+			TArray<FVector> SidePoints;
+			if (bHasHistory && SettleTime > 0.f) {
+				SidePoints.SetNumUninitialized(Count);
+				for (int32 Index = 0; Index < Count; ++Index) {
+					SidePoints[Index] = AnchorCS.TransformPosition(History->SolvedLocal[Index]);
+				}
+				// Start from the previous corrected chain and settle back toward the input pose. A stateless
+				// solve can push a strand out of either side of a capsule and flips between frames.
+				for (int32 Index = 1; Index < Count; ++Index) {
+					Points[Index] = FMath::Lerp(SidePoints[Index], TargetPoints[Index], SettleAlpha);
+				}
+			}
+			const KawaiiPhysicsIKCorrection::FDiagnostics Diagnostics = KawaiiPhysicsIKCorrection::SolveChain(
+				Points,
+				Lengths,
+				ReferencePoints,
+				ChainCapsules,
+				SnapshotIterations,
+				Chain.Radius,
+				SidePoints.IsEmpty() ? nullptr : &SidePoints
+			);
 			if (!Diagnostics.bFinite) {
 				DebugReason = TEXT("nonfinite_chain_solution");
 				return;
+			}
+			if (History) {
+				History->Bones = Chain.Bones;
+				History->Anchor = Chain.Anchor;
+				History->SolvedLocal.SetNumUninitialized(Count);
+				for (int32 Index = 0; Index < Count; ++Index) {
+					History->SolvedLocal[Index] = AnchorCS.InverseTransformPosition(Points[Index]);
+				}
+				if (!bHasHistory) {
+					History->SmoothedOffsetLocal.Init(FVector::ZeroVector, Count);
+				}
+				const bool bSmooth = bHasHistory && SmoothingTime > 0.f;
+				for (int32 Index = 1; Index < Count; ++Index) {
+					const FVector OffsetLocal = AnchorCS.InverseTransformVector(Points[Index] - TargetPoints[Index]);
+					FVector& SmoothedOffset = History->SmoothedOffsetLocal[Index];
+					SmoothedOffset = bSmooth ? FMath::Lerp(SmoothedOffset, OffsetLocal, SmoothingAlpha) : OffsetLocal;
+					if (bSmooth) {
+						Points[Index] = TargetPoints[Index] + AnchorCS.TransformVector(SmoothedOffset);
+					}
+				}
+				// Smoothing each point independently would stretch the strand; keep the baked bone lengths.
+				if (bSmooth) {
+					RestoreChainLengths(Points, Lengths, TargetPoints);
+				}
 			}
 			FQuat PreviousSwing = FQuat::Identity;
 			for (int32 Index = 0; Index < Count; ++Index) {
@@ -425,6 +553,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 			Output.Pose[FCompactPoseBoneIndex(Bone)] = FinalLocal[Bone];
 		}
 	}
+	bWroteCorrection = true;
 	DebugReason
 		= Strength < 1.f ? TEXT("corrected_alpha_reduces_collision_strength") : (MaxPenetration > 0.01 || MaxLengthError > 0.01 ? TEXT("corrected_with_constraint_residual") : TEXT("corrected"));
 }

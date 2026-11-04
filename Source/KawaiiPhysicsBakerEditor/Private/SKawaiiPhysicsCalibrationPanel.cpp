@@ -44,7 +44,11 @@ void SKawaiiPhysicsCalibrationPanel::Construct(const FArguments&, UAnimBlueprint
 		[
 			SNew(STextBlock)
 			.AutoWrapText(true)
-			.Text(LOCTEXT("Help", "选择人物与衣物网格体及衣物 Kawaii 节点，按播放顺序添加多个测试动作。关闭“播放前重置”可测试动画切换；将独立片段标为“仅用于验证”。GPU 先筛选候选参数，再由原始 Kawaii CPU 模拟复验。输出为可复用的物理配置，不会覆盖现有动画资产。"))
+			.Text_Lambda([this] {
+				return Settings->bSearchNodeSettings
+					? LOCTEXT("NodeSearchHelp", "节点参数搜索：在设置的范围与骨骼配对候选方案内，用原生 Kawaii CPU 模拟逐一评估 Physics Settings 和 Bone Constraints。按顺序添加测试动作，并用独立“仅用于验证”片段验收。本次有限候选的最佳结果不保证全局最优。保存结果后，点击“应用到蓝图”会一并写回选中的节点参数；未达标候选仅供试用，仍可能穿透。")
+					: LOCTEXT("LegacySearchHelp", "旧 GPU 倍率搜索：GPU 先筛选阻尼、刚度、骨骼半径倍率与碰撞迭代候选，再由原生 Kawaii CPU 模拟复验。关闭“播放前重置”可测试动画切换；将独立片段标为“仅用于验证”。本次有限候选的最佳结果不保证全局最优。开启“搜索节点参数”可搜索节点本身的 Physics Settings 和 Bone Constraints。");
+			})
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(10, 0)
 		[
@@ -66,7 +70,14 @@ void SKawaiiPhysicsCalibrationPanel::Construct(const FArguments&, UAnimBlueprint
 			+ SHorizontalBox::Slot().AutoWidth().Padding(3)
 			[
 				SNew(SButton)
-				.Text(LOCTEXT("Start", "开始 GPU 校准"))
+				.Text_Lambda([this] {
+					return Settings->bSearchNodeSettings ? LOCTEXT("StartNodeSearch", "开始节点参数搜索") : LOCTEXT("StartLegacySearch", "开始旧 GPU 搜索");
+				})
+				.ToolTipText_Lambda([this] {
+					return Settings->bSearchNodeSettings
+						? LOCTEXT("StartNodeSearchHelp", "按 CPU 搜索候选数生成有限参数组合，并对全部候选运行原生 Kawaii 模拟与验收。搜索期间不修改源蓝图；范围和候选方案由下方设置控制。")
+						: LOCTEXT("StartLegacySearchHelp", "使用旧版 GPU 倍率筛选与 CPU 复验流程，需要支持 SM5 计算着色器的图形接口。");
+				})
 				.IsEnabled_Lambda([this] { return !Session->IsRunning(); })
 				.OnClicked_Lambda([this] {
 					Message.Reset();
@@ -87,11 +98,18 @@ void SKawaiiPhysicsCalibrationPanel::Construct(const FArguments&, UAnimBlueprint
 			+ SHorizontalBox::Slot().AutoWidth().Padding(3)
 			[
 				SNew(SButton)
-				.Text(LOCTEXT("Save", "保存配置"))
+				.Text_Lambda([this] {
+					return Session->HasUnacceptedResult() ? LOCTEXT("SaveUnaccepted", "保存最佳候选（未达标）") : LOCTEXT("Save", "保存配置");
+				})
+				.ToolTipText_Lambda([this] {
+					return Session->HasUnacceptedResult()
+						? LOCTEXT("SaveUnacceptedHelp", "保存当前未通过验收的结果供试用。它仍可能穿透或拉伸；保存和应用均不会将其标记为验收通过。手动配置没有经过搜索验收。")
+						: LOCTEXT("SaveHelp", "将搜索结果保存为新配置资产。节点参数搜索结果同时保存获选的节点参数方案，随后点击“应用到蓝图”写回。");
+				})
 				.IsEnabled_Lambda([this] { return !Session->IsRunning() && Session->GetResult(); })
 				.OnClicked_Lambda([this] {
 					Message.Reset();
-					if (Session->SaveResult(Message)) {
+					if (Session->SaveResult(Message, Session->HasUnacceptedResult())) {
 						TArray<UObject*> Assets{Session->GetResult()};
 						FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get().SyncBrowserToAssets(Assets);
 					}
@@ -102,6 +120,11 @@ void SKawaiiPhysicsCalibrationPanel::Construct(const FArguments&, UAnimBlueprint
 			[
 				SNew(SButton)
 				.Text(LOCTEXT("Apply", "应用到蓝图"))
+				.ToolTipText_Lambda([this] {
+					return Session->HasUnacceptedResult()
+						? LOCTEXT("ApplyUnacceptedHelp", "将已保存的未通过验收结果写回所选节点供试用，并绑定配置、编译蓝图。结果可能仍有穿透或骨长误差，必须检查实际动作；应用不会将它标记为验收通过。操作可撤销，检查后需保存蓝图。")
+						: LOCTEXT("ApplyHelp", "将已保存结果绑定到所选 Kawaii 节点；含节点参数方案时，一并写回获选的 Physics Settings 和 Bone Constraints 并编译蓝图。直接把配置拖入节点槽不会自动写回这些参数。应用可撤销，检查后需保存蓝图。");
+				})
 				.IsEnabled_Lambda([this] { return !Session->IsRunning() && Session->GetResult(); })
 				.OnClicked_Lambda([this] {
 					Message.Reset();
@@ -132,7 +155,7 @@ void SKawaiiPhysicsCalibrationPanel::Construct(const FArguments&, UAnimBlueprint
 				.ToolTipText(LOCTEXT("SaveManualHelp", "无需测试动作。保存当前碰撞与范围设置为新配置，再点击应用到蓝图进行游戏测试；不生成蒙皮接触点，也不表示通过穿模验收。"))
 				.OnClicked_Lambda([this] {
 					Message.Reset();
-					if (Session->CreateManualProfile(Settings.Get(), Message) && Session->SaveResult(Message)) {
+					if (Session->CreateManualProfile(Settings.Get(), Message) && Session->SaveResult(Message, true)) {
 						TArray<UObject*> Assets{Session->GetResult()};
 						FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get().SyncBrowserToAssets(Assets);
 						Message = TEXT("已保存手动配置，未经穿模验收。点击“应用到蓝图”后可进行游戏测试。更改参数后需要再次保存手动配置。");

@@ -41,12 +41,27 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiPhysicsIKCorrection : publi
 	virtual void Update_AnyThread(const FAnimationUpdateContext& Context) override;
 	virtual void Evaluate_AnyThread(FPoseContext& Output) override;
 	virtual void GatherDebugData(FNodeDebugData& DebugData) override;
+	/** Reuse the snapshotted solver with already evaluated local poses. */
+	void CorrectPose(FPoseContext& Output, const FPoseContext& BakedContext);
+	/** Owners that call CorrectPose directly report their update time here; Update_AnyThread does it for this node. */
+	void AccumulateDeltaTime(float DeltaTime);
+	/** Forget the previous solution, e.g. when the owner skips correction for a frame. The next solve is stateless. */
+	void ResetTemporalState();
 
 	const FString& GetCorrectionDebugReason() const { return DebugReason; }
 	double GetMaxPenetration() const { return MaxPenetration; }
 	double GetMaxLengthError() const { return MaxLengthError; }
 
 private:
+	/** Previous solution of one chain, stored relative to its live anchor so body motion never lags. */
+	struct FChainTemporalState
+	{
+		TArray<int32> Bones;
+		int32 Anchor = INDEX_NONE;
+		TArray<FVector> SolvedLocal;
+		TArray<FVector> SmoothedOffsetLocal;
+	};
+
 	// Only PreUpdate reads the UObject. Worker evaluation uses owned value snapshots.
 	TArray<FKawaiiPhysicsIKCorrectionChain> SnapshotChains;
 	TArray<FKawaiiPhysicsIKCorrectionCapsule> SnapshotCapsules;
@@ -54,8 +69,12 @@ private:
 	bool bSnapshotUseAttachedParent = false;
 	FString SnapshotError;
 	int32 SnapshotIterations = 16;
+	float SnapshotSettleTime = 0.f;
+	float SnapshotSmoothingTime = 0.f;
 	bool bHasProfileSnapshot = false;
 	FString DebugReason;
 	double MaxPenetration = 0;
 	double MaxLengthError = 0;
+	TArray<FChainTemporalState> TemporalStates;
+	float PendingDeltaTime = 0.f;
 };

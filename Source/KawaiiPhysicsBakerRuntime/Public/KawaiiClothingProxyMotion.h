@@ -28,6 +28,9 @@ public:
 		TSoftObjectPtr<UAnimSequence> SourceAnimation;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
 		TSoftObjectPtr<UAnimSequence> BakedAnimation;
+	/** Main output from the same bake; supports automatic runtime matching when the body plays baked animation. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
+		TSoftObjectPtr<UAnimSequence> BodyBakedAnimation;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
 		FGuid BakeGroup;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")

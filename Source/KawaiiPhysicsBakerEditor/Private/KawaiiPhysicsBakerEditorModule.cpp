@@ -17,6 +17,8 @@
 #include "SKawaiiPhysicsBakePanel.h"
 #include "SKawaiiPhysicsCalibrationPanel.h"
 #include "SKawaiiClothingProxyPanel.h"
+#include "KawaiiClothingProxyPlaybackUpgrade.h"
+#include "KawaiiPhysicsIKProfileGenerator.h"
 
 #define LOCTEXT_NAMESPACE "KawaiiPhysicsBakerEditor"
 
@@ -159,6 +161,21 @@ private:
 								 FGlobalTabmanager::Get()->TryInvokeTab(KawaiiPhysicsBakerEditor::ClothingProxyTabId);
 							 }))
 		);
+		Section.AddMenuEntry("UpgradeKawaiiClothingProxyPlayback",
+                             LOCTEXT("UpgradeProxyPlayback", "升级所选衣物代理动作集合"),
+                             LOCTEXT("UpgradeProxyPlaybackHelp", "为内容浏览器中选中的衣物代理动作集合补全可在运行时读取的身体烘焙动画关联。按生成组、源动作和 Main 部件元数据匹配，并保存修改的代理运动。"),
+                             FSlateIcon(),
+                             FUIAction(FExecuteAction::CreateStatic(&KawaiiClothingProxyUpgrade::UpgradeSelectedSets),
+                                       FCanExecuteAction::CreateStatic(&KawaiiClothingProxyUpgrade::HasSelectedSets)));
+		const FUIAction GenerateProfileAction(FExecuteAction::CreateStatic(&KawaiiPhysicsIKProfileGenerator::GenerateForSelectedAnimBlueprints),
+											  FCanExecuteAction::CreateStatic(&KawaiiPhysicsIKProfileGenerator::HasSelectedAnimBlueprints));
+		const FText GenerateProfileLabel = LOCTEXT("GenerateIKProfile", "生成 Kawaii IK 修正配置");
+		const FText GenerateProfileHelp = LOCTEXT("GenerateIKProfileHelp", "根据所选动画蓝图中的 KawaiiPhysics 节点自动推断骨链（分叉处拆分、遵循衣物代理的忽略目标骨链），导入外侧球体/胶囊限制作为身体碰撞体，生成或更新 DA_<蓝图名>_IKCorrection，并填入 Profile 为空的自动衣物代理修正节点。");
+		Section.AddMenuEntry("GenerateKawaiiIKCorrectionProfile", GenerateProfileLabel, GenerateProfileHelp, FSlateIcon(), GenerateProfileAction);
+		if (UToolMenu* AssetMenu = UToolMenus::Get()->ExtendMenu("ContentBrowser.AssetContextMenu.AnimBlueprint")) {
+			AssetMenu->FindOrAddSection("GetAssetActions")
+				.AddMenuEntry("GenerateKawaiiIKCorrectionProfile", GenerateProfileLabel, GenerateProfileHelp, FSlateIcon(), GenerateProfileAction);
+		}
 		Section.AddMenuEntry("KawaiiCalibration",
 							 LOCTEXT("CalibrationMenu", "Kawaii 物理校准"),
 							 LOCTEXT("CalibrationMenuHelp", "使用多个动作进行离线 GPU 校准，运行时仅由 CPU 执行物理模拟。"),
