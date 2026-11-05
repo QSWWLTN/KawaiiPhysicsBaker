@@ -5,18 +5,23 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
 #include "Misc/ScopeExit.h"
+#include "Misc/ScopeLock.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "ProfilingDebugging/CountersTrace.h"
 
 #include "KawaiiPhysicsIKCorrectionMath.h"
 #include "KawaiiPhysicsBakerProfiling.h"
+#include "KawaiiPhysicsGPUCorrection.h"
 
-namespace
-{
+namespace {
 	/** A longer gap (hitch, pause, teleport-like discontinuity) restarts from a stateless solve. */
 	constexpr float MaxTemporalGapSeconds = 0.25f;
 	/** Upper bound accepted for the profile's temporal time constants. */
 	constexpr float MaxTemporalTimeConstant = 10.f;
+
+	FVector4f GPUQuaternion(const FQuat& Q) {
+		return FVector4f(float(Q.X), float(Q.Y), float(Q.Z), float(Q.W));
+	}
 
 	struct FResolvedChain
 	{
@@ -30,7 +35,8 @@ namespace
 
 	bool FiniteTransform(const FTransform& Transform) {
 		const FVector Scale = Transform.GetScale3D();
-		return !Transform.ContainsNaN() && Transform.IsRotationNormalized() && Scale.X > UE_SMALL_NUMBER && Scale.Y > UE_SMALL_NUMBER && Scale.Z > UE_SMALL_NUMBER;
+		return !Transform.ContainsNaN() && Transform.IsRotationNormalized() && Scale.X > UE_SMALL_NUMBER && Scale.Y > UE_SMALL_NUMBER
+			&& Scale.Z > UE_SMALL_NUMBER;
 	}
 
 	int32 ResolveBone(FBoneReference Bone, const FBoneContainer& RequiredBones) {
@@ -107,12 +113,27 @@ void FAnimNode_KawaiiPhysicsIKCorrection::AccumulateDeltaTime(float DeltaTime) {
 void FAnimNode_KawaiiPhysicsIKCorrection::ResetTemporalState() {
 	TemporalStates.Reset();
 	PendingDeltaTime = 0.f;
+	bGPUCorrectionRequested = false;
+	if (GPUState) {
+		GPUState->Invalidate(this);
+	}
+}
+
+void FAnimNode_KawaiiPhysicsIKCorrection::ReportGPUReason(const FString& Reason) {
+	if (GPUState) {
+		FScopeLock Lock(&GPUState->Mutex);
+		if (GPUState->Owner == this && !GPUState->bRequiresCPU) {
+			GPUState->LastReason = Reason;
+		}
+	}
 }
 
 void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimInstance) {
 	TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_PreUpdate);
 	SCOPE_CYCLE_COUNTER(STAT_KawaiiBakerCorrectionSnapshot);
 	check(IsInGameThread());
+	GPUState = KawaiiPhysicsGPU::Prepare(InAnimInstance, this, Profile && bGPUCorrectionRequested, GPUState);
+	bGPUCorrectionRequested = false;
 	bHasProfileSnapshot = Profile != nullptr;
 	SnapshotChains.Reset();
 	SnapshotCapsules.Reset();
@@ -152,9 +173,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 			break;
 		}
 	}
-	if (!Source
-		|| !Source->IsRegistered() || !Source->GetSkeletalMeshAsset())
-	{
+	if (!Source || !Source->IsRegistered() || !Source->GetSkeletalMeshAsset()) {
 		SnapshotError = TEXT("attached_parent_collision_missing_source");
 		return;
 	}
@@ -182,8 +201,8 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 			SnapshotError = TEXT("attached_parent_collision_bone_missing");
 			return;
 		}
-		if (Definition.StartOffset.ContainsNaN()
-			|| Definition.EndOffset.ContainsNaN() || !FMath::IsFinite(Definition.Radius) || Definition.Radius <= 0.f || !FiniteTransform(SourcePose[Start]) || !FiniteTransform(SourcePose[End]))
+		if (Definition.StartOffset.ContainsNaN() || Definition.EndOffset.ContainsNaN() || !FMath::IsFinite(Definition.Radius) || Definition.Radius <= 0.f
+			|| !FiniteTransform(SourcePose[Start]) || !FiniteTransform(SourcePose[End]))
 		{
 			SnapshotError = TEXT("attached_parent_collision_invalid_geometry");
 			return;
@@ -194,9 +213,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 		Capsule.Start = TargetWorld.InverseTransformPosition(SourceWorld.TransformPosition(SourcePose[Start].TransformPosition(Definition.StartOffset)));
 		Capsule.End = TargetWorld.InverseTransformPosition(SourceWorld.TransformPosition(SourcePose[End].TransformPosition(Definition.EndOffset)));
 		Capsule.Radius = Definition.Radius * SpaceStretch * FMath::Max(SourcePose[Start].GetScale3D().GetAbsMax(), SourcePose[End].GetScale3D().GetAbsMax());
-		if (Capsule.Start.ContainsNaN()
-			|| Capsule.End.ContainsNaN() || !FMath::IsFinite(Capsule.Radius))
-		{
+		if (Capsule.Start.ContainsNaN() || Capsule.End.ContainsNaN() || !FMath::IsFinite(Capsule.Radius)) {
 			SnapshotError = TEXT("attached_parent_collision_nonfinite_capsule");
 			return;
 		}
@@ -228,6 +245,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::Evaluate_AnyThread(FPoseContext& Outpu
 }
 
 void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, const FPoseContext& BakedContext) {
+	bGPUCorrectionRequested = false;
 	MaxPenetration = MaxLengthError = 0.0;
 	DebugReason = TEXT("driver_pose_fallback");
 	// Each solve consumes the time reported since the previous one.
@@ -235,10 +253,13 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 	PendingDeltaTime = 0.f;
 	// Every early return emits the uncorrected driver pose; continuing from older history afterwards would pop.
 	bool bWroteCorrection = false;
-	ON_SCOPE_EXIT
-	{
+	ON_SCOPE_EXIT {
+		ReportGPUReason(DebugReason);
 		if (!bWroteCorrection) {
 			TemporalStates.Reset();
+			if (GPUState) {
+				GPUState->Invalidate(this);
+			}
 		}
 	};
 	if (!SnapshotError.IsEmpty()) {
@@ -249,9 +270,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 		DebugReason = TEXT("missing_profile_or_chains");
 		return;
 	}
-	if (SnapshotChains.Num() > 64
-		|| SnapshotCapsules.Num() > 64 || SnapshotIterations < 1 || SnapshotIterations > 64 || !FMath::IsFinite(Alpha))
-	{
+	if (SnapshotChains.Num() > 64 || SnapshotCapsules.Num() > 64 || SnapshotIterations < 1 || SnapshotIterations > 64 || !FMath::IsFinite(Alpha)) {
 		DebugReason = TEXT("invalid_profile_limits_or_alpha");
 		return;
 	}
@@ -385,10 +404,27 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 	ExplicitTransform.Init(0, NumBones);
 	const float Strength = FMath::Clamp(Alpha, 0.f, 1.f);
 
+	TSharedPtr<KawaiiPhysicsGPU::FFrame, ESPMode::ThreadSafe> GPUFrame;
+	TArray<int32> CompactToPoint;
+	bool bGPUChainsCompatible = Strength > 0.f;
+	for (const FResolvedChain& Chain : Chains) {
+		bGPUChainsCompatible &= Chain.Bones.Num() <= int32(KawaiiPhysicsGPU::MaxChainPoints);
+	}
+	if (bGPUChainsCompatible && GPUState && GPUState->CanSubmit(this)) {
+		GPUFrame = MakeShared<KawaiiPhysicsGPU::FFrame, ESPMode::ThreadSafe>();
+		GPUFrame->DeltaTime = DeltaTime;
+		GPUFrame->SettleTime = ValidTimeConstant(SnapshotSettleTime);
+		GPUFrame->SmoothingTime = ValidTimeConstant(SnapshotSmoothingTime);
+		CompactToPoint.Init(INDEX_NONE, NumBones);
+		TemporalStates.Reset();
+	} else if (GPUState) {
+		GPUState->Invalidate(this);
+	}
+
 	// Temporal stability. History is stored relative to each chain's live anchor, so body motion never lags.
 	const float SettleTime = ValidTimeConstant(SnapshotSettleTime);
 	const float SmoothingTime = ValidTimeConstant(SnapshotSmoothingTime);
-	const bool bTemporalEnabled = SettleTime > 0.f || SmoothingTime > 0.f;
+	const bool bTemporalEnabled = !GPUFrame && (SettleTime > 0.f || SmoothingTime > 0.f);
 	if (!bTemporalEnabled || DeltaTime > MaxTemporalGapSeconds) {
 		TemporalStates.Reset();
 	}
@@ -418,13 +454,14 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 			for (int32 Index = 0; Index < Count; ++Index) {
 				const int32 Bone = Chain.Bones[Index];
 				const float Weight = Chain.Weight * float(Index) / float(Count - 1);
-				Warped.Add(KawaiiPhysicsIKCorrection::WarpTransform(BakedCS[Bone],
-																	BakedCS[Chain.Anchor],
-																	DriverCS[Chain.Anchor],
-																	BakedCS[Chain.Driver],
-																	DriverCS[Chain.Driver],
-																	Weight)
-				);
+				Warped.Add(KawaiiPhysicsIKCorrection::WarpTransform(
+					BakedCS[Bone],
+					BakedCS[Chain.Anchor],
+					DriverCS[Chain.Anchor],
+					BakedCS[Chain.Driver],
+					DriverCS[Chain.Driver],
+					Weight
+				));
 				Points.Add(Warped.Last().GetTranslation());
 				ReferencePoints.Add(BaselineCS[Bone].GetTranslation());
 				// Preserve baked local proportions under the current anchor's scale.
@@ -434,6 +471,41 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 			}
 			// Keep the root fixed to the live anchor even when driver and anchor move in opposite directions.
 			Points[0] = ReferencePoints[0];
+			if (GPUFrame) {
+				using namespace KawaiiPhysicsGPU;
+				FChain& GPUChain = GPUFrame->Chains.AddDefaulted_GetRef();
+				const int32 FirstPoint = GPUFrame->Points.Num() / PointStride;
+				GPUChain.Range = FUintVector4(FirstPoint, Count, GPUFrame->Capsules.Num() / 2, ChainCapsules.Num());
+				GPUChain.Parameters = FVector4f(Chain.Radius, Strength, SnapshotIterations, 0.f);
+				const FTransform& Anchor = DriverCS[Chain.Anchor];
+				GPUChain.AnchorRotation = GPUQuaternion(Anchor.GetRotation());
+				GPUChain.AnchorPosition = FVector4f(FVector3f(Anchor.GetTranslation()), 0.f);
+				GPUChain.AnchorScale = FVector4f(FVector3f(Anchor.GetScale3D()), 0.f);
+				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Chain.Anchor));
+				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Chain.Driver));
+				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Chain.Weight));
+				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Chain.Radius));
+				for (int32 Index = 0; Index < Count; ++Index) {
+					const FTransform& Baseline = BaselineCS[Chain.Bones[Index]];
+					if (!FiniteTransform(Warped[Index])) {
+						DebugReason = TEXT("nonfinite_gpu_input");
+						return;
+					}
+					GPUFrame->Points.Add(FVector4f(FVector3f(Points[Index]), Index > 0 ? float(Lengths[Index - 1]) : 0.f));
+					GPUFrame->PointBones.Add(RequiredBones.MakeMeshPoseIndex(FCompactPoseBoneIndex(Chain.Bones[Index])).GetInt());
+					GPUFrame->Points.Add(FVector4f(FVector3f(ReferencePoints[Index]), 0.f));
+					GPUFrame->Points.Add(GPUQuaternion(Baseline.GetRotation()));
+					GPUFrame->Points.Add(FVector4f(FVector3f(Baseline.GetScale3D()), 0.f));
+					GPUFrame->Points.Add(GPUQuaternion(Warped[Index].GetRotation()));
+					GPUFrame->Points.Add(FVector4f(FVector3f(Warped[Index].GetScale3D()), 0.f));
+					CompactToPoint[Chain.Bones[Index]] = FirstPoint + Index;
+				}
+				for (const auto& Capsule : ChainCapsules) {
+					GPUFrame->Capsules.Add(FVector4f(FVector3f(Capsule.Start), float(Capsule.Radius)));
+					GPUFrame->Capsules.Add(FVector4f(FVector3f(Capsule.End), 0.f));
+				}
+				continue;
+			}
 			// Driver-warped input before contacts: the pose temporal settling and smoothing return to.
 			const TArray<FVector> TargetPoints = Points;
 			const FTransform& AnchorCS = DriverCS[Chain.Anchor];
@@ -548,18 +620,47 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 			return;
 		}
 	}
+	if (GPUFrame) {
+		GPUFrame->BoneToPoint.Init(INDEX_NONE, RequiredBones.GetReferenceSkeleton().GetNum());
+		for (int32 Bone = 0; Bone < NumBones; ++Bone) {
+			if (CompactToPoint[Bone] == INDEX_NONE && Parents[Bone] != INDEX_NONE) {
+				CompactToPoint[Bone] = CompactToPoint[Parents[Bone]];
+			}
+			const int32 MeshBone = RequiredBones.MakeMeshPoseIndex(FCompactPoseBoneIndex(Bone)).GetInt();
+			if (GPUFrame->BoneToPoint.IsValidIndex(MeshBone)) {
+				GPUFrame->BoneToPoint[MeshBone] = CompactToPoint[Bone];
+			}
+		}
+		for (int32 Point : GPUFrame->BoneToPoint) {
+			GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Point));
+		}
+		if (!GPUState->Submit(this, GPUFrame)) {
+			DebugReason = TEXT("gpu_submission_unavailable");
+			return;
+		}
+	}
 	for (int32 Bone = 0; Bone < NumBones; ++Bone) {
 		if (Affected[Bone]) {
 			Output.Pose[FCompactPoseBoneIndex(Bone)] = FinalLocal[Bone];
 		}
 	}
 	bWroteCorrection = true;
-	DebugReason
-		= Strength < 1.f ? TEXT("corrected_alpha_reduces_collision_strength") : (MaxPenetration > 0.01 || MaxLengthError > 0.01 ? TEXT("corrected_with_constraint_residual") : TEXT("corrected"));
+	bGPUCorrectionRequested = bGPUChainsCompatible;
+	if (GPUState && bGPUCorrectionRequested) {
+		GPUState->RequestCorrection(this);
+	}
+	if (GPUFrame) {
+		DebugReason = TEXT("gpu_visual_correction_cpu_pose_is_baseline");
+		return;
+	}
+	DebugReason = Strength < 1.f ? TEXT("corrected_alpha_reduces_collision_strength")
+								 : (MaxPenetration > 0.01 || MaxLengthError > 0.01 ? TEXT("corrected_with_constraint_residual") : TEXT("corrected"));
 }
 
 void FAnimNode_KawaiiPhysicsIKCorrection::GatherDebugData(FNodeDebugData& DebugData) {
-	DebugData.AddDebugItem(FString::Printf(TEXT("%s (%s, penetration %.3f cm, length error %.3f cm)"), *DebugData.GetNodeName(this), *DebugReason, MaxPenetration, MaxLengthError));
+	DebugData.AddDebugItem(
+		FString::Printf(TEXT("%s (%s, penetration %.3f cm, length error %.3f cm)"), *DebugData.GetNodeName(this), *DebugReason, MaxPenetration, MaxLengthError)
+	);
 	BakedPose.GatherDebugData(DebugData.BranchFlow(1.f));
 	DriverPose.GatherDebugData(DebugData.BranchFlow(1.f));
 }

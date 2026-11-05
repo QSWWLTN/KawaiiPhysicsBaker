@@ -31,7 +31,6 @@
 #include "UObject/SavePackage.h"
 #include "Serialization/MemoryWriter.h"
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
-
 #include "KawaiiPhysicsCalibrationProfile.h"
 #include "KawaiiPhysicsLimitsDataAsset.h"
 #include "KawaiiPhysicsBoneConstraintsDataAsset.h"
@@ -119,7 +118,14 @@ namespace {
 				SerializeDependency(BodySetup);
 			}
 		}
-		for (const auto* Curve : {&Node->Node.DampingCurveData, &Node->Node.StiffnessCurveData, &Node->Node.RadiusCurveData, &Node->Node.WorldDampingLocationCurveData, &Node->Node.WorldDampingRotationCurveData, &Node->Node.LimitAngleCurveData}) {
+		for (const auto* Curve :
+			 {&Node->Node.DampingCurveData,
+			  &Node->Node.StiffnessCurveData,
+			  &Node->Node.RadiusCurveData,
+			  &Node->Node.WorldDampingLocationCurveData,
+			  &Node->Node.WorldDampingRotationCurveData,
+			  &Node->Node.LimitAngleCurveData})
+		{
 			SerializeDependency(Curve->ExternalCurve);
 		}
 		return FCrc::MemCrc32(Bytes.GetData(), Bytes.Num());
@@ -220,10 +226,14 @@ void FKawaiiPhysicsCalibrationSession::Tick() {
 		if (++MotionIndex >= Settings->Motions.Num()) {
 			if (Settings->bSearchNodeSettings) {
 				Finalists.Reset();
-				for (int32 I = 0; I < Candidates.Num(); ++I) { Finalists.Add(I); }
+				for (int32 I = 0; I < Candidates.Num(); ++I) {
+					Finalists.Add(I);
+				}
 				FinalistIndex = 0;
 				Stage = EStage::CPU;
-				if (!BeginCPU(Finalists[0], Error)) { Fail(Error); }
+				if (!BeginCPU(Finalists[0], Error)) {
+					Fail(Error);
+				}
 				return;
 			}
 			GPU = FKawaiiCalibrationGPU::Start(GPUInput, Error);
@@ -264,11 +274,10 @@ void FKawaiiPhysicsCalibrationSession::Tick() {
 		const double Count = FMath::Max(1, TrainingFrames * FreeBones);
 		const auto Value = [&](int32 I) {
 			const auto& S = GPUScores[I];
-			return Settings->PenetrationWeight * (S.X / Count + S.Y * S.Y) + Settings->DeviationWeight * S.Z / Count + Settings->JitterWeight * S.W / Count + Settings->IterationCostWeight * GPUInput.Candidates[I].W;
+			return Settings->PenetrationWeight * (S.X / Count + S.Y * S.Y) + Settings->DeviationWeight * S.Z / Count + Settings->JitterWeight * S.W / Count
+				+ Settings->IterationCostWeight * GPUInput.Candidates[I].W;
 		};
-		Ranked.Sort([&](int32 A, int32 B) {
-			return Value(A) < Value(B);
-		});
+		Ranked.Sort([&](int32 A, int32 B) { return Value(A) < Value(B); });
 		Finalists = {0};
 		for (int32 I = 0; I < FMath::Min(Settings->CPUFinalists, Ranked.Num()); ++I) {
 			Finalists.Add(Ranked[I]);
@@ -289,7 +298,13 @@ void FKawaiiPhysicsCalibrationSession::Tick() {
 			}
 		} while (SampleIndex < Samples.Num() && FPlatformTime::Seconds() < Deadline);
 		if (bSurfacePointsSelected) {
-			Status = FString::Printf(TEXT("CPU 复验：配置 %d/%d，帧 %d/%d（包含动画切换和独立验证片段）。"), FinalistIndex + 1, Finalists.Num(), SampleIndex, Samples.Num());
+			Status = FString::Printf(
+				TEXT("CPU 复验：配置 %d/%d，帧 %d/%d（包含动画切换和独立验证片段）。"),
+				FinalistIndex + 1,
+				Finalists.Num(),
+				SampleIndex,
+				Samples.Num()
+			);
 		} else {
 			Status = TEXT("CPU 正在定位训练动作中的蒙皮接触区域，随后统一复验所有候选。");
 		}
@@ -336,7 +351,9 @@ float FKawaiiPhysicsCalibrationSession::GetProgress() const {
 	if (Stage == EStage::CPU) {
 		const float Fraction = float(SampleIndex) / FMath::Max(1, Samples.Num());
 		if (Settings->bSearchNodeSettings) {
-			if (!bSurfacePointsSelected) { return .15f + .05f * Fraction; }
+			if (!bSurfacePointsSelected) {
+				return .15f + .05f * Fraction;
+			}
 			const float Begin = SkinPoints.IsEmpty() ? .15f : .2f;
 			return Begin + (1.f - Begin) * (FinalistIndex + Fraction) / FMath::Max(1, Finalists.Num());
 		}
@@ -409,8 +426,7 @@ bool FKawaiiPhysicsCalibrationSession::ApplyToBlueprint(FString& OutError) {
 		OutError = TEXT("蓝图编译失败。本次配置赋值可以撤销，蓝图尚未保存。");
 		return false;
 	}
-	Status = (bResultAccepted ? FString() : FString(TEXT("此候选未达到验收阈值，当前仅供试用。")))
-		+ TEXT("已将配置和搜索得到的节点参数赋给所选 Kawaii 节点。请检查并保存衣物动画蓝图。");
+	Status = (bResultAccepted ? FString() : FString(TEXT("此候选未达到验收阈值，当前仅供试用。"))) + TEXT("已将配置和搜索得到的节点参数赋给所选 Kawaii 节点。请检查并保存衣物动画蓝图。");
 	return true;
 }
 
@@ -432,21 +448,15 @@ bool FKawaiiPhysicsCalibrationSession::Prepare(FString& OutError) {
 		OutError = TEXT("请选择人物与衣物网格体、衣物动画蓝图和测试动作。");
 		return false;
 	}
-	if (Settings->SampleRate < 30
-		|| Settings->SampleRate > 120
-		|| Settings->WarmUpFrames < 0
-		|| Settings->WarmUpFrames > 240
-		|| (!Settings->bSearchNodeSettings && (Settings->CandidateCount < 8 || Settings->CandidateCount > 1024 || Settings->CPUFinalists < 1 || Settings->CPUFinalists > 16))
-		|| Settings->MaxContactIterations < 1
-		|| Settings->MaxContactIterations > 8
-		|| Settings->SkinSampleCount < 0
-		|| Settings->SkinSampleCount > 512)
+	if (Settings->SampleRate < 30 || Settings->SampleRate > 120 || Settings->WarmUpFrames < 0 || Settings->WarmUpFrames > 240
+		|| (!Settings->bSearchNodeSettings
+			&& (Settings->CandidateCount < 8 || Settings->CandidateCount > 1024 || Settings->CPUFinalists < 1 || Settings->CPUFinalists > 16))
+		|| Settings->MaxContactIterations < 1 || Settings->MaxContactIterations > 8 || Settings->SkinSampleCount < 0 || Settings->SkinSampleCount > 512)
 	{
 		OutError = TEXT("校准采样或候选数量等设置超出支持范围。");
 		return false;
 	}
-	if (Settings->ClothingTransform.ContainsNaN()
-		|| !Settings->ClothingTransform.IsRotationNormalized()
+	if (Settings->ClothingTransform.ContainsNaN() || !Settings->ClothingTransform.IsRotationNormalized()
 		|| Settings->ClothingTransform.GetScale3D().GetMin() <= 0)
 	{
 		OutError = TEXT("衣物相对变换必须使用有限正数缩放和归一化旋转。");
@@ -466,35 +476,34 @@ bool FKawaiiPhysicsCalibrationSession::Prepare(FString& OutError) {
 	OriginalProfile = Node->Node.CalibrationProfile;
 	if (Settings->bSearchNodeSettings) {
 		for (const UEdGraphPin* Pin : Node->Pins) {
-			if (!Pin || Pin->Direction != EGPD_Input || Pin->LinkedTo.IsEmpty()) { continue; }
+			if (!Pin || Pin->Direction != EGPD_Input || Pin->LinkedTo.IsEmpty()) {
+				continue;
+			}
 			const UEdGraphPin* RootPin = Pin;
-			while (RootPin->ParentPin) { RootPin = RootPin->ParentPin; }
+			while (RootPin->ParentPin) {
+				RootPin = RootPin->ParentPin;
+			}
 			const FString Name = RootPin->PinName.ToString();
-			const bool bSearched = Name.StartsWith(TEXT("PhysicsSettings")) || Name == TEXT("CalibrationProfile")
-				|| Name.Contains(TEXT("CurveData")) || Name.Contains(TEXT("BoneConstraint")) || Name.Contains(TEXT("BoneSubdivision"))
-				|| Name == TEXT("bAutoAddChildDummyBoneConstraint");
+			const bool bSearched = Name.StartsWith(TEXT("PhysicsSettings")) || Name == TEXT("CalibrationProfile") || Name.Contains(TEXT("CurveData"))
+				|| Name.Contains(TEXT("BoneConstraint")) || Name.Contains(TEXT("BoneSubdivision")) || Name == TEXT("bAutoAddChildDummyBoneConstraint");
 			if (bSearched) {
-				OutError = FString::Printf(TEXT("输入引脚 %s 已连接，会覆盖节点默认参数；当前自动搜索无法可靠应用此节点。请先将该参数作为节点常量配置。"), *Pin->PinName.ToString());
+				OutError = FString::Printf(
+					TEXT("输入引脚 %s 已连接，会覆盖节点默认参数；当前自动搜索无法可靠应用此节点。请先将该参数作为节点常量配置。"),
+					*Pin->PinName.ToString()
+				);
 				return false;
 			}
 		}
 	}
 	Settings->PhysicsRoot = Template.RootBone.BoneName;
 	SourceNodeHash = NodeHash(Settings->ClothingBlueprint, Settings->PhysicsRoot);
-	if (Template.bAllowWorldCollision
-		|| Template.bEnableWind
-		|| !Template.CustomExternalForces.IsEmpty()
-		|| !Template.ExternalForces.IsEmpty()
-		|| Template.bUseSharedCollision
-		|| Template.bSharedCollisionSource
-		|| !Template.SyncBones.IsEmpty())
+	if (Template.bAllowWorldCollision || Template.bEnableWind || !Template.CustomExternalForces.IsEmpty() || !Template.ExternalForces.IsEmpty()
+		|| Template.bUseSharedCollision || Template.bSharedCollisionSource || !Template.SyncBones.IsEmpty())
 	{
 		OutError = TEXT("离线校准要求节点关闭世界碰撞、风力、外力数组、共享碰撞和同步骨骼。请使用仅含确定性局部约束的蓝图副本进行校准，原蓝图不会被修改。");
 		return false;
 	}
-	if (Template.SimulationSpace != EKawaiiPhysicsSimulationSpace::ComponentSpace
-		|| !Template.SimpleExternalForce.IsNearlyZero()
-		|| Template.bUseLegacyGravity
+	if (Template.SimulationSpace != EKawaiiPhysicsSimulationSpace::ComponentSpace || !Template.SimpleExternalForce.IsNearlyZero() || Template.bUseLegacyGravity
 		|| Template.bUseDefaultGravityZProjectSetting)
 	{
 		OutError = TEXT("GPU 筛选目前要求使用组件空间模拟、显式重力，并关闭旧版重力、项目默认重力和简单外力。");
@@ -599,18 +608,9 @@ bool FKawaiiPhysicsCalibrationSession::Prepare(FString& OutError) {
 	bool bHasTraining = false;
 	int64 EstimatedFrames = 0;
 	for (const auto& M : Settings->Motions) {
-		if (!M.Animation
-			|| M.Animation->GetSkeleton() != Settings->BodyMesh->GetSkeleton()
-			|| M.Animation->IsValidAdditive()
-			|| !FMath::IsFinite(M.PlayRate)
-			|| M.PlayRate < .25f
-			|| M.PlayRate > 3
-			|| !FMath::IsFinite(M.Animation->GetPlayLength())
-			|| M.Animation->GetPlayLength() <= 0
-			|| !FMath::IsFinite(M.BlendInSeconds)
-			|| M.BlendInSeconds < 0
-			|| M.BlendInSeconds > 2
-			|| M.LocalOffset.ContainsNaN()
+		if (!M.Animation || M.Animation->GetSkeleton() != Settings->BodyMesh->GetSkeleton() || M.Animation->IsValidAdditive() || !FMath::IsFinite(M.PlayRate)
+			|| M.PlayRate < .25f || M.PlayRate > 3 || !FMath::IsFinite(M.Animation->GetPlayLength()) || M.Animation->GetPlayLength() <= 0
+			|| !FMath::IsFinite(M.BlendInSeconds) || M.BlendInSeconds < 0 || M.BlendInSeconds > 2 || M.LocalOffset.ContainsNaN()
 			|| M.LocalRotation.ContainsNaN())
 		{
 			OutError = TEXT("每个测试动作必须是匹配人物骨架的非叠加动画，且时长、播放倍率、过渡时长和 IK 偏移必须有效。");
@@ -628,20 +628,27 @@ bool FKawaiiPhysicsCalibrationSession::Prepare(FString& OutError) {
 		OutError = TEXT("至少需要一个参与搜索的动作片段；总量不得超过 20,000 帧、800 万个粒子样本和 512 MiB 姿势缓存。");
 		return false;
 	}
-	if (!FMath::IsFinite(Settings->MaxAcceptedPenetration) || Settings->MaxAcceptedPenetration < 0.f
-		|| !FMath::IsFinite(Settings->MaxAcceptedLengthError) || Settings->MaxAcceptedLengthError < 0.f)
+	if (!FMath::IsFinite(Settings->MaxAcceptedPenetration) || Settings->MaxAcceptedPenetration < 0.f || !FMath::IsFinite(Settings->MaxAcceptedLengthError)
+		|| Settings->MaxAcceptedLengthError < 0.f)
 	{
 		OutError = TEXT("验收阈值必须是有限非负数。");
 		return false;
 	}
-	const auto ValidRange = [](const FVector2D& R, double Min) {
-		return FMath::IsFinite(R.X) && FMath::IsFinite(R.Y) && R.X >= Min && R.Y <= 4 && R.X <= R.Y;
-	};
-	if (!Settings->bSearchNodeSettings && (!ValidRange(Settings->DampingScaleRange, .1) || !ValidRange(Settings->StiffnessScaleRange, .1) || !ValidRange(Settings->RadiusScaleRange, .25))) {
+	const auto ValidRange = [](const FVector2D& R, double Min) { return FMath::IsFinite(R.X) && FMath::IsFinite(R.Y) && R.X >= Min && R.Y <= 4 && R.X <= R.Y; };
+	if (!Settings->bSearchNodeSettings
+		&& (!ValidRange(Settings->DampingScaleRange, .1) || !ValidRange(Settings->StiffnessScaleRange, .1) || !ValidRange(Settings->RadiusScaleRange, .25)))
+	{
 		OutError = TEXT("搜索范围无效：阻尼和刚度倍率必须在 0.1 至 4 之间，半径倍率必须在 0.25 至 4 之间。");
 		return false;
 	}
-	for (float Value : {Settings->PenetrationWeight, Settings->DeviationWeight, Settings->JitterWeight, Settings->IterationCostWeight, Settings->SoftMargin, Settings->SoftResponse}) {
+	for (float Value :
+		 {Settings->PenetrationWeight,
+		  Settings->DeviationWeight,
+		  Settings->JitterWeight,
+		  Settings->IterationCostWeight,
+		  Settings->SoftMargin,
+		  Settings->SoftResponse})
+	{
 		if (!FMath::IsFinite(Value) || Value < 0) {
 			OutError = TEXT("评分和碰撞参数必须是有限非负数。");
 			return false;
@@ -661,8 +668,13 @@ bool FKawaiiPhysicsCalibrationSession::Prepare(FString& OutError) {
 	GPUInput.SoftMargin = Settings->SoftMargin;
 	GPUInput.SoftResponse = Settings->SoftResponse;
 	if (Settings->bSearchNodeSettings) {
-		if (!KawaiiCalibrationSearch::Generate(*Settings, OriginalTemplate, Candidates, OutError)) { return false; }
-		if (Candidates.IsEmpty() || !Candidates[0].bOriginalBaseline) { OutError = TEXT("原生搜索必须包含原始节点基准候选。"); return false; }
+		if (!KawaiiCalibrationSearch::Generate(*Settings, OriginalTemplate, Candidates, OutError)) {
+			return false;
+		}
+		if (Candidates.IsEmpty() || !Candidates[0].bOriginalBaseline) {
+			OutError = TEXT("原生搜索必须包含原始节点基准候选。");
+			return false;
+		}
 	} else {
 		FRandomStream Random(Settings->Seed);
 		for (int32 I = 0; I < Settings->CandidateCount; ++I) {
@@ -671,11 +683,18 @@ bool FKawaiiPhysicsCalibrationSession::Prepare(FString& OutError) {
 			Candidate.Label = FString::Printf(TEXT("GPU_%d"), I);
 			if (I > 0) {
 				const auto Pick = [&](const FVector2D& R) { return Random.FRandRange(R.X, R.Y); };
-				Candidate.ProfileParameters = FVector4f(Pick(Settings->DampingScaleRange), Pick(Settings->StiffnessScaleRange), Pick(Settings->RadiusScaleRange), Random.RandRange(1, Settings->MaxContactIterations));
+				Candidate.ProfileParameters = FVector4f(
+					Pick(Settings->DampingScaleRange),
+					Pick(Settings->StiffnessScaleRange),
+					Pick(Settings->RadiusScaleRange),
+					Random.RandRange(1, Settings->MaxContactIterations)
+				);
 			}
 		}
 	}
-	for (const auto& Candidate : Candidates) { GPUInput.Candidates.Add(Candidate.ProfileParameters); }
+	for (const auto& Candidate : Candidates) {
+		GPUInput.Candidates.Add(Candidate.ProfileParameters);
+	}
 	// Stable LOD0 skin samples, only vertices influenced by the selected physics subtrees.
 	if (Settings->SkinSampleCount > 0) {
 		if (auto* Render = Settings->ClothingMesh->GetResourceForRendering()) {
@@ -878,7 +897,7 @@ bool FKawaiiPhysicsCalibrationSession::BeginCPU(int32 Candidate, FString& OutErr
 		WorkingProfile->ContactIterations = C.W;
 		Settings->CopyConstraintsToProfile(*WorkingProfile);
 		WorkingProfile->bUseSceneContacts = false;
-	WorkingProfile->bUseAttachedParent = !Settings->bSearchNodeSettings || Settings->bUseAttachedParentForContacts;
+		WorkingProfile->bUseAttachedParent = !Settings->bSearchNodeSettings || Settings->bUseAttachedParentForContacts;
 		WorkingProfile->SurfaceMesh = Settings->ClothingMesh;
 		for (int32 Index : SurfacePointIndices) {
 			const auto& Skin = SkinPoints[Index];
@@ -896,7 +915,9 @@ bool FKawaiiPhysicsCalibrationSession::BeginCPU(int32 Candidate, FString& OutErr
 			WorkingProfile->OptimizedNodeSettings = SearchCandidate.NodeSettings;
 		}
 	}
-	Scene = MakeUnique<FPreviewScene>(FPreviewScene::ConstructionValues().SetEditor(true).SetCreateDefaultLighting(false).SetCreatePhysicsScene(true).ShouldSimulatePhysics(false));
+	Scene = MakeUnique<FPreviewScene>(
+		FPreviewScene::ConstructionValues().SetEditor(true).SetCreateDefaultLighting(false).SetCreatePhysicsScene(true).ShouldSimulatePhysics(false)
+	);
 	FActorSpawnParameters Spawn;
 	Spawn.ObjectFlags = RF_Transient;
 	Actor = Scene->GetWorld()->SpawnActor<AActor>(AActor::StaticClass(), FTransform::Identity, Spawn);
@@ -1004,7 +1025,8 @@ bool FKawaiiPhysicsCalibrationSession::StepCPU(FString& OutError) {
 				FVector N;
 				double Along;
 				// 固定验收几何，避免缩小候选碰撞半径就能降低穿透评分。
-				const double ContactDepth = KawaiiContact::SegmentContact(Positions[Parent], Positions[I], C, GPUInput.Bones[I].W, FVector::ForwardVector, N, Along);
+				const double ContactDepth =
+					KawaiiContact::SegmentContact(Positions[Parent], Positions[I], C, GPUInput.Bones[I].W, FVector::ForwardVector, N, Along);
 				if (ContactDepth > Depth) {
 					Depth = ContactDepth;
 					DeepestCapsule = CapsuleIndex;
@@ -1095,18 +1117,17 @@ void FKawaiiPhysicsCalibrationSession::SelectSurfacePoints() {
 void FKawaiiPhysicsCalibrationSession::Finish() {
 	const FVerified& Baseline = Verified[0];
 	const auto MeetsLimits = [&](const FVerified& V) {
-		return AcceptanceDepth(V.Training) <= Settings->MaxAcceptedPenetration
-			&& AcceptanceDepth(V.Validation) <= Settings->MaxAcceptedPenetration
-			&& V.Training.MaxLengthError <= Settings->MaxAcceptedLengthError
-			&& V.Validation.MaxLengthError <= Settings->MaxAcceptedLengthError;
+		return AcceptanceDepth(V.Training) <= Settings->MaxAcceptedPenetration && AcceptanceDepth(V.Validation) <= Settings->MaxAcceptedPenetration
+			&& V.Training.MaxLengthError <= Settings->MaxAcceptedLengthError && V.Validation.MaxLengthError <= Settings->MaxAcceptedLengthError;
 	};
 	int32 Best = 0;
 	for (int32 I = 1; I < Verified.Num(); ++I) {
 		const auto& V = Verified[I];
-		const bool bValidationOK =
-			!V.Validation.Count || (AcceptanceDepth(V.Validation) <= AcceptanceDepth(Baseline.Validation) + .01 && Rank(V.Validation, V.Candidate) <= Rank(Baseline.Validation, 0) + .001 && V.Validation.MaxLengthError <= FMath::Max(.5, Baseline.Validation.MaxLengthError + .01));
-		if (bValidationOK
-			&& AcceptanceDepth(V.Training) <= AcceptanceDepth(Baseline.Training) + .01
+		const bool bValidationOK = !V.Validation.Count
+			|| (AcceptanceDepth(V.Validation) <= AcceptanceDepth(Baseline.Validation) + .01
+				&& Rank(V.Validation, V.Candidate) <= Rank(Baseline.Validation, 0) + .001
+				&& V.Validation.MaxLengthError <= FMath::Max(.5, Baseline.Validation.MaxLengthError + .01));
+		if (bValidationOK && AcceptanceDepth(V.Training) <= AcceptanceDepth(Baseline.Training) + .01
 			&& ((MeetsLimits(V) && !MeetsLimits(Verified[Best])) || (MeetsLimits(V) == MeetsLimits(Verified[Best]) && V.Rank < Verified[Best].Rank))
 			&& V.Training.MaxLengthError <= FMath::Max(.5, Baseline.Training.MaxLengthError + .01))
 		{
@@ -1119,7 +1140,9 @@ void FKawaiiPhysicsCalibrationSession::Finish() {
 	Result = Selected.bOriginalBaseline ? nullptr : DuplicateObject<UKawaiiPhysicsCalibrationProfile>(VerifiedProfiles[Best].Get(), GetTransientPackage());
 	bResultAccepted = bAccepted && Result != nullptr;
 	FString Summary = FString::Printf(
-		TEXT("%s：%d 组候选；原始 CPU 验证：%d 组；选中候选：%d（%s）。训练片段验收穿透：%.4f -> %.4f 厘米；独立验证片段验收穿透：%.4f -> %.4f 厘米；蒙皮采样点：%d。存在蒙皮采样时按布面验收，否则按固定骨骼代理验收；不保证三角网格完全无穿模。"),
+		TEXT(
+			"%s：%d 组候选；原始 CPU 验证：%d 组；选中候选：%d（%s）。训练片段验收穿透：%.4f -> %.4f 厘米；独立验证片段验收穿透：%.4f -> %.4f 厘米；蒙皮采样点：%d。存在蒙皮采样时按布面验收，否则按固定骨骼代理验收；不保证三角网格完全无穿模。"
+		),
 		Settings->bSearchNodeSettings ? TEXT("节点参数搜索") : TEXT("GPU 筛选"),
 		Candidates.Num(),
 		Verified.Num(),
@@ -1134,9 +1157,15 @@ void FKawaiiPhysicsCalibrationSession::Finish() {
 	if (!Winner.Validation.Count) {
 		Summary += TEXT(" 未提供独立验证片段，尚未检验对其他动作的适用性。");
 	}
-	if (!bAccepted) { Summary = (Result ? FString(TEXT("未达到验收阈值；这是有限候选中的最佳结果，可另行保存供试用。")) : FString(TEXT("原配置仍未达到验收阈值。"))) + Summary; }
-	if (Selected.bOriginalBaseline) { Summary = TEXT("原配置表现最好，本次没有找到优于原配置的新参数。") + Summary; }
-	if (Result) { Result->ValidationSummary = Summary; }
+	if (!bAccepted) {
+		Summary = (Result ? FString(TEXT("未达到验收阈值；这是有限候选中的最佳结果，可另行保存供试用。")) : FString(TEXT("原配置仍未达到验收阈值。"))) + Summary;
+	}
+	if (Selected.bOriginalBaseline) {
+		Summary = TEXT("原配置表现最好，本次没有找到优于原配置的新参数。") + Summary;
+	}
+	if (Result) {
+		Result->ValidationSummary = Summary;
+	}
 	const auto Metrics = [&](const FMetrics& M) {
 		auto O = MakeShared<FJsonObject>();
 		O->SetNumberField(TEXT("samples"), M.Count);
@@ -1187,10 +1216,19 @@ void FKawaiiPhysicsCalibrationSession::Finish() {
 	Report->SetBoolField(TEXT("accepted"), bAccepted);
 	Report->SetBoolField(TEXT("has_new_candidate"), Result != nullptr);
 	Report->SetStringField(TEXT("search_mode"), Settings->bSearchNodeSettings ? TEXT("native_node_settings") : TEXT("gpu_profile_multipliers"));
-	Report->SetStringField(TEXT("jitter_metric"), TEXT("Squared second difference of simulated minus input component-space position, per fixed sample; animation acceleration itself is excluded."));
+	Report->SetStringField(
+		TEXT("jitter_metric"),
+		TEXT("Squared second difference of simulated minus input component-space position, per fixed sample; animation acceleration itself is excluded.")
+	);
 	if (Settings->bSearchNodeSettings) {
-		Report->SetStringField(TEXT("body_contact_source"), TEXT("New candidates read same-name body bones from the clothing input pose; component attachment is not required."));
-		Report->SetStringField(TEXT("world_damping_search"), TEXT("Preserved: test components have no world trajectory, so world translation/rotation damping cannot be identified."));
+		Report->SetStringField(
+			TEXT("body_contact_source"),
+			TEXT("New candidates read same-name body bones from the clothing input pose; component attachment is not required.")
+		);
+		Report->SetStringField(
+			TEXT("world_damping_search"),
+			TEXT("Preserved: test components have no world trajectory, so world translation/rotation damping cannot be identified.")
+		);
 	}
 	Report->SetNumberField(TEXT("max_accepted_penetration_cm"), Settings->MaxAcceptedPenetration);
 	Report->SetNumberField(TEXT("max_accepted_length_error_cm"), Settings->MaxAcceptedLengthError);
@@ -1222,9 +1260,7 @@ void FKawaiiPhysicsCalibrationSession::Finish() {
 	Report->SetNumberField(TEXT("elapsed_seconds"), FPlatformTime::Seconds() - StartTime);
 	Report->SetNumberField(TEXT("selected_candidate"), Winner.Candidate);
 	Report->SetBoolField(TEXT("has_held_out_validation"), Winner.Validation.Count > 0);
-	Report->SetStringField(TEXT("baseline"), Settings->bSearchNodeSettings
-		? TEXT("候选 0：原始节点参数和已绑定的原校准配置；不添加新接触点。")
-		: TEXT("候选 0：原始参数倍率（1,1,1），启用新增 CPU 碰撞修正并迭代 2 次；与未启用该修正的原始节点不同。"));
+	Report->SetStringField( TEXT("baseline"), Settings->bSearchNodeSettings ? TEXT("候选 0：原始节点参数和已绑定的原校准配置；不添加新接触点。") : TEXT("候选 0：原始参数倍率（1,1,1），启用新增 CPU 碰撞修正并迭代 2 次；与未启用该修正的原始节点不同。") );
 	TArray<TSharedPtr<FJsonValue>> Rows;
 	for (const auto& V : Verified) {
 		auto Row = MakeShared<FJsonObject>();
@@ -1261,7 +1297,9 @@ void FKawaiiPhysicsCalibrationSession::Finish() {
 	Report->SetArrayField(TEXT("motions"), Rows);
 	if (!bAccepted) {
 		FString Failure = FString::Printf(
-			TEXT("最佳结果未达标：仍有 %.3f 厘米穿透（允许 %.3f），骨长误差 %.3f 厘米（允许 %.3f）。碰撞来源：%s。请根据报告检查最严重穿透的动作、时刻和碰撞骨骼。"),
+			TEXT(
+				"最佳结果未达标：仍有 %.3f 厘米穿透（允许 %.3f），骨长误差 %.3f 厘米（允许 %.3f）。碰撞来源：%s。请根据报告检查最严重穿透的动作、时刻和碰撞骨骼。"
+			),
 			FMath::Max(AcceptanceDepth(Winner.Training), AcceptanceDepth(Winner.Validation)),
 			Settings->MaxAcceptedPenetration,
 			FMath::Max(Winner.Training.MaxLengthError, Winner.Validation.MaxLengthError),
@@ -1286,14 +1324,21 @@ void FKawaiiPhysicsCalibrationSession::Finish() {
 					}
 				}
 				Failure += FString::Printf(TEXT(" 此点可平移修正的骨骼影响权重为 %.1f%%；请检查模拟根骨骼、蒙皮权重与碰撞代理。"), MovableWeight * 100.);
-				if (MovableWeight < .1) { Failure += TEXT(" 该点大部分权重属于固定骨骼；调整 Physics Settings 或 Bone Constraints 无法移动固定骨骼，增加候选数量也不能解决这一限制。"); }
+				if (MovableWeight < .1) {
+					Failure +=
+						TEXT(" 该点大部分权重属于固定骨骼；调整 Physics Settings 或 Bone Constraints 无法移动固定骨骼，增加候选数量也不能解决这一限制。");
+				}
 			}
 		}
 		Summary += TEXT(" ") + Failure;
-		if (Result) { Result->ValidationSummary = Summary; }
+		if (Result) {
+			Result->ValidationSummary = Summary;
+		}
 	}
 	Report->SetStringField(TEXT("summary"), Summary);
-	ReportPath = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir() / TEXT("KawaiiCalibration") / FGuid::NewGuid().ToString(EGuidFormats::Digits) / TEXT("report.json"));
+	ReportPath = FPaths::ConvertRelativePathToFull(
+		FPaths::ProjectSavedDir() / TEXT("KawaiiCalibration") / FGuid::NewGuid().ToString(EGuidFormats::Digits) / TEXT("report.json")
+	);
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(ReportPath), true);
 	FString Json;
 	FJsonSerializer::Serialize(Report, TJsonWriterFactory<>::Create(&Json));
@@ -1331,8 +1376,10 @@ void FKawaiiPhysicsCalibrationSession::ClearScene() {
 
 double FKawaiiPhysicsCalibrationSession::Rank(const FMetrics& M, int32 Candidate) const {
 	const double BoneCount = FMath::Max<int64>(1, M.BoneCount);
-	return Settings->PenetrationWeight * (MeanSquaredPenetration(M) + FMath::Square(AcceptanceDepth(M))) + Settings->DeviationWeight * M.Deviation2 / BoneCount + Settings->JitterWeight * M.Jitter2 / BoneCount
-		+ Settings->IterationCostWeight * (Settings->bSearchNodeSettings ? KawaiiCalibrationSearch::Cost(Candidates[Candidate]) : Candidates[Candidate].ProfileParameters.W);
+	return Settings->PenetrationWeight * (MeanSquaredPenetration(M) + FMath::Square(AcceptanceDepth(M))) + Settings->DeviationWeight * M.Deviation2 / BoneCount
+		+ Settings->JitterWeight * M.Jitter2 / BoneCount
+		+ Settings->IterationCostWeight
+		* (Settings->bSearchNodeSettings ? KawaiiCalibrationSearch::Cost(Candidates[Candidate]) : Candidates[Candidate].ProfileParameters.W);
 }
 
 double FKawaiiPhysicsCalibrationSession::MeanSquaredPenetration(const FMetrics& M) const {
@@ -1352,8 +1399,12 @@ void FKawaiiPhysicsCalibrationSession::Fail(const FString& Error) {
 
 void FKawaiiPhysicsCalibrationSession::FMetrics::AddDepth(double Depth, int32 Motion, float Time, int32 MeshBone, int32 Capsule) {
 	Depth2 += Depth * Depth;
-	if (MeshBone == INDEX_NONE) { SkinDepth2 += Depth * Depth; ++SkinCount; }
-	else { BoneDepth2 += Depth * Depth; }
+	if (MeshBone == INDEX_NONE) {
+		SkinDepth2 += Depth * Depth;
+		++SkinCount;
+	} else {
+		BoneDepth2 += Depth * Depth;
+	}
 	double& KindDepth = MeshBone == INDEX_NONE ? MaxSkinDepth : MaxBoneDepth;
 	KindDepth = FMath::Max(KindDepth, Depth);
 	if (Depth > MaxDepth) {

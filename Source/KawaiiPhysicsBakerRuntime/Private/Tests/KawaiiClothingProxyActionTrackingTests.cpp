@@ -16,12 +16,13 @@
 
 #if WITH_DEV_AUTOMATION_TESTS
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyScopedActionTrackingTest,
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiProxyScopedActionTrackingTest,
 	"KawaiiPhysicsBaker.ClothingProxy.AutomaticTracking.ScopeAndCurrentTime",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
-bool FKawaiiProxyScopedActionTrackingTest::RunTest(const FString&)
-{
+bool FKawaiiProxyScopedActionTrackingTest::RunTest(const FString&) {
 	TStrongObjectPtr<UAnimSequence> First(NewObject<UAnimSequence>());
 	TStrongObjectPtr<UAnimSequence> Second(NewObject<UAnimSequence>());
 	FAnimInstanceProxy Proxy;
@@ -48,34 +49,42 @@ bool FKawaiiProxyScopedActionTrackingTest::RunTest(const FString&)
 	FString Error;
 	KawaiiClothingProxy::FTrackedMontageSnapshot Snapshot;
 	Snapshot.bCaptured = true;
-	TestTrue(TEXT("Tracks only the tagged full-body branch including an evaluator"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 7u, 0.5f, NAME_None, Actions, Error, &Snapshot));
-	if (TestEqual(TEXT("Unrelated players are excluded"), Actions.Num(), 2))
-	{
+	TestTrue(
+		TEXT("Tracks only the tagged full-body branch including an evaluator"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 7u, 0.5f, NAME_None, Actions, Error, &Snapshot)
+	);
+	if (TestEqual(TEXT("Unrelated players are excluded"), Actions.Num(), 2)) {
 		TestEqual(TEXT("Time is read after synchronization, not captured during update"), Actions[0].Time, 0.4f);
 		TestEqual(TEXT("Weight is relative to the tracked branch"), Actions[0].Weight, 0.6f);
 		TestEqual(TEXT("Evaluator explicit time is preserved"), Actions[1].Time, SecondTime);
 		TestTrue(TEXT("Asset identity is retained"), Actions[0].Animation == FSoftObjectPath(First.Get()));
 	}
-	TestFalse(TEXT("Previous update tags cannot be reused"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 8u, 0.5f, NAME_None, Actions, Error, &Snapshot));
+	TestFalse(
+		TEXT("Previous update tags cannot be reused"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 8u, 0.5f, NAME_None, Actions, Error, &Snapshot)
+	);
 	TestTrue(TEXT("Failure clears stale results"), Actions.IsEmpty());
 	Records.RemoveAt(1);
-	TestFalse(TEXT("Missing cached-pose contributions are not silently normalized"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 7u, 0.5f, NAME_None, Actions, Error, &Snapshot));
+	TestFalse(
+		TEXT("Missing cached-pose contributions are not silently normalized"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 7u, 0.5f, NAME_None, Actions, Error, &Snapshot)
+	);
 	Records = {FirstRecord, SecondRecord};
 	Records[0].bRequestedInertialization = true;
-	TestFalse(TEXT("Inertialized tracks require explicit handling"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 7u, 0.5f, NAME_None, Actions, Error, &Snapshot));
+	TestFalse(
+		TEXT("Inertialized tracks require explicit handling"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Owner, 7u, 0.5f, NAME_None, Actions, Error, &Snapshot)
+	);
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyBlendSpaceTrackingTest,
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiProxyBlendSpaceTrackingTest,
 	"KawaiiPhysicsBaker.ClothingProxy.AutomaticTracking.BlendSpaceSamples",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
-bool FKawaiiProxyBlendSpaceTrackingTest::RunTest(const FString&)
-{
+bool FKawaiiProxyBlendSpaceTrackingTest::RunTest(const FString&) {
 	TStrongObjectPtr<UAnimSequence> Walk(NewObject<UAnimSequence>());
 	TStrongObjectPtr<UAnimSequence> Run(NewObject<UAnimSequence>());
 	TStrongObjectPtr<UBlendSpace> BlendSpace(NewObject<UBlendSpace>());
@@ -104,28 +113,32 @@ bool FKawaiiProxyBlendSpaceTrackingTest::RunTest(const FString&)
 	FString Error;
 	KawaiiClothingProxy::FTrackedMontageSnapshot Snapshot;
 	Snapshot.bCaptured = true;
-	TestTrue(TEXT("Expands BlendSpace samples into sequence-local clocks"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 1u, 1.f, NAME_None, Actions, Error, &Snapshot));
-	if (TestEqual(TEXT("Both sequence samples are retained"), Actions.Num(), 2))
-	{
+	TestTrue(
+		TEXT("Expands BlendSpace samples into sequence-local clocks"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 1u, 1.f, NAME_None, Actions, Error, &Snapshot)
+	);
+	if (TestEqual(TEXT("Both sequence samples are retained"), Actions.Num(), 2)) {
 		TestEqual(TEXT("Walk time is sequence-local, not BlendSpace normalized time"), Actions[0].Time, 0.75f);
 		TestEqual(TEXT("Run uses its own sample time"), Actions[1].Time, 0.35f);
 		TestEqual(TEXT("Sample weight survives"), Actions[1].Weight, 0.75f);
 	}
 	Samples[0].PerBoneBlendData.Add(0.5f);
-	TestFalse(TEXT("Per-bone sample blending cannot be approximated by scalar weights"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 1u, 1.f, NAME_None, Actions, Error, &Snapshot));
+	TestFalse(
+		TEXT("Per-bone sample blending cannot be approximated by scalar weights"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 1u, 1.f, NAME_None, Actions, Error, &Snapshot)
+	);
 	TestTrue(TEXT("Unsupported sample cannot leave previous results"), Actions.IsEmpty());
 	return true;
 }
 
 #if WITH_EDITOR
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyMontageTrackingTest,
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiProxyMontageTrackingTest,
 	"KawaiiPhysicsBaker.ClothingProxy.AutomaticTracking.MontageSegmentTime",
-	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
-bool FKawaiiProxyMontageTrackingTest::RunTest(const FString&)
-{
+bool FKawaiiProxyMontageTrackingTest::RunTest(const FString&) {
 	TStrongObjectPtr<UAnimSequence> Idle(NewObject<UAnimSequence>());
 	TStrongObjectPtr<UAnimSequence> Attack(NewObject<UAnimSequence>());
 	TStrongObjectPtr<USkeleton> Skeleton(NewObject<USkeleton>());
@@ -175,13 +188,19 @@ bool FKawaiiProxyMontageTrackingTest::RunTest(const FString&)
 	const_cast<TArray<FAnimTickRecord>&>(Proxy.GetUngroupedActivePlayersRead()).Add(IdleRecord);
 	TArray<KawaiiClothingProxy::FTrackedAction> Actions;
 	FString Error;
-	TestFalse(TEXT("A montage cannot silently be ignored without a configured slot"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 3u, 1.f, NAME_None, Actions, Error, &Snapshot));
-	TestTrue(TEXT("The configured full-body slot includes its source and montage blend"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 3u, 1.f, SlotName, Actions, Error, &Snapshot));
-	if (TestEqual(TEXT("Idle and attack both contribute"), Actions.Num(), 2))
-	{
-		TestTrue(FString::Printf(TEXT("Trim, speed and looping yield 0.3s (actual %.8f)"), Actions[1].Time), FMath::IsNearlyEqual(Actions[1].Time, 0.3f, 1.e-4f));
+	TestFalse(
+		TEXT("A montage cannot silently be ignored without a configured slot"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 3u, 1.f, NAME_None, Actions, Error, &Snapshot)
+	);
+	TestTrue(
+		TEXT("The configured full-body slot includes its source and montage blend"),
+		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 3u, 1.f, SlotName, Actions, Error, &Snapshot)
+	);
+	if (TestEqual(TEXT("Idle and attack both contribute"), Actions.Num(), 2)) {
+		TestTrue(
+			FString::Printf(TEXT("Trim, speed and looping yield 0.3s (actual %.8f)"), Actions[1].Time),
+			FMath::IsNearlyEqual(Actions[1].Time, 0.3f, 1.e-4f)
+		);
 		TestEqual(TEXT("Montage blend weight is retained"), Actions[1].Weight, 0.4f);
 		TestTrue(TEXT("Mapping identity uses the segment sequence"), Actions[1].Animation == FSoftObjectPath(Attack.Get()));
 	}
@@ -189,11 +208,12 @@ bool FKawaiiProxyMontageTrackingTest::RunTest(const FString&)
 	Instance->MontageInstances.Add(&MontageInstance);
 	KawaiiClothingProxy::CaptureMontages(*Instance, Snapshot);
 	Instance->MontageInstances.Reset();
-	TestTrue(TEXT("Reversed segments remain supported"),
-		KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 3u, 1.f, SlotName, Actions, Error, &Snapshot));
-	if (Actions.Num() == 2)
-	{
-		TestTrue(FString::Printf(TEXT("Reverse sequence-local time is 0.7s (actual %.8f)"), Actions[1].Time), FMath::IsNearlyEqual(Actions[1].Time, 0.7f, 1.e-4f));
+	TestTrue(TEXT("Reversed segments remain supported"), KawaiiClothingProxy::CollectActions(Proxy, &Proxy, 3u, 1.f, SlotName, Actions, Error, &Snapshot));
+	if (Actions.Num() == 2) {
+		TestTrue(
+			FString::Printf(TEXT("Reverse sequence-local time is 0.7s (actual %.8f)"), Actions[1].Time),
+			FMath::IsNearlyEqual(Actions[1].Time, 0.7f, 1.e-4f)
+		);
 	}
 	return true;
 }

@@ -6,5 +6,6 @@ public class KawaiiPhysicsBakerRuntime : ModuleRules
     {
         PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
         PublicDependencyModuleNames.AddRange(new[] { "Core", "CoreUObject", "Engine", "AnimGraphRuntime" });
+        PrivateDependencyModuleNames.AddRange(new[] { "RenderCore", "Renderer", "RHI", "Projects" });
     }
 }

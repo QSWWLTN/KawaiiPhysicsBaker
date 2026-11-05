@@ -1,5 +1,3 @@
-#include "AnimNode_KawaiiPhysicsIKCorrection.h"
-
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/Skeleton.h"
@@ -7,6 +5,8 @@
 #include "Engine/SkeletalMesh.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/StrongObjectPtr.h"
+
+#include "AnimNode_KawaiiPhysicsIKCorrection.h"
 
 #if WITH_DEV_AUTOMATION_TESTS && WITH_EDITOR
 
@@ -34,8 +34,11 @@ namespace KawaiiIKTemporalTests {
 	}
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKTemporalStabilityTest, "KawaiiPhysicsBaker.IKCorrection.TemporalStability",
-								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKTemporalStabilityTest,
+	"KawaiiPhysicsBaker.IKCorrection.TemporalStability",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
 bool FKawaiiIKTemporalStabilityTest::RunTest(const FString&) {
 	using namespace KawaiiIKTemporalTests;
@@ -126,16 +129,24 @@ bool FKawaiiIKTemporalStabilityTest::RunTest(const FString&) {
 	const FRunResult Flipping = Run(Stateless.Get(), 1.f / 60.f, 0.f);
 	const FRunResult Stable = Run(Temporal.Get(), 1.f / 60.f, 0.5f);
 	const FRunResult Untimed = Run(Temporal.Get(), 0.f, 0.f);
-	AddInfo(FString::Printf(TEXT("Stateless tip x %.3f, max step %.3f; temporal tip x %.3f, max step %.3f, gap tip x %.3f"),
-							Flipping.FinalTipX, Flipping.MaxTipStep, Stable.FinalTipX, Stable.MaxTipStep, Stable.GapTipX));
+	AddInfo(FString::Printf(
+		TEXT("Stateless tip x %.3f, max step %.3f; temporal tip x %.3f, max step %.3f, gap tip x %.3f"),
+		Flipping.FinalTipX,
+		Flipping.MaxTipStep,
+		Stable.FinalTipX,
+		Stable.MaxTipStep,
+		Stable.GapTipX
+	));
 
 	TestTrue(TEXT("Stateless correction resolves the contact"), Flipping.FinalReason.StartsWith(TEXT("corrected")) && Flipping.FinalPenetration < 0.1);
 	TestTrue(TEXT("Stateless correction flips the strand to the other side of the capsule"), Flipping.FinalTipX < 0.0);
 	TestTrue(TEXT("The stateless flip is a visible jump"), Flipping.MaxTipStep > 3.0);
 	TestTrue(TEXT("Temporal correction keeps the strand on its original side"), Stable.FinalTipX > 0.0);
 	TestTrue(TEXT("Temporal correction has no frame-to-frame jump"), Stable.MaxTipStep < 1.5);
-	TestTrue(FString::Printf(TEXT("Temporal correction still fully resolves the held contact (%s)"), *Stable.FinalReason),
-			 Stable.FinalPenetration < 0.1 && Stable.FinalLengthError < 0.05);
+	TestTrue(
+		FString::Printf(TEXT("Temporal correction still fully resolves the held contact (%s)"), *Stable.FinalReason),
+		Stable.FinalPenetration < 0.1 && Stable.FinalLengthError < 0.05
+	);
 	TestTrue(TEXT("A long gap restarts from a stateless solve"), Stable.GapTipX < 0.0);
 	TestTrue(TEXT("Without reported time the solve stays stateless"), FMath::IsNearlyEqual(Untimed.FinalTipX, Flipping.FinalTipX, 1.e-6));
 	return true;

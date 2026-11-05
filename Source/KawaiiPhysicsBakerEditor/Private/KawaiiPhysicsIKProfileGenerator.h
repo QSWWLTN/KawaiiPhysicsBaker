@@ -1,13 +1,13 @@
 #pragma once
 
 #include "CoreMinimal.h"
+
 #include "KawaiiPhysicsIKCorrectionProfile.h"
 
 class UAnimBlueprint;
 
 /** Builds a UKawaiiPhysicsIKCorrectionProfile from the KawaiiPhysics nodes already authored in an AnimBlueprint. */
-namespace KawaiiPhysicsIKProfileGenerator
-{
+namespace KawaiiPhysicsIKProfileGenerator {
 	/** One KawaiiPhysics root and the bones its node excludes together with their descendants. */
 	struct FSimulatedRoot
 	{

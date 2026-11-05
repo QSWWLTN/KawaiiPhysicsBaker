@@ -18,7 +18,6 @@
 #include "HAL/FileManager.h"
 #include "UObject/SavePackage.h"
 #include "SAssetDropTarget.h"
-
 #include "KawaiiPhysicsCalibrationProfile.h"
 
 #include "KawaiiPhysicsCalibrationSession.h"
@@ -254,7 +253,9 @@ FReply SKawaiiPhysicsCalibrationPanel::LoadJob() {
 		Message = TEXT("请在内容浏览器中选择一个校准测试集资产。");
 		return FReply::Handled();
 	}
-	Settings.Reset(DuplicateObject<UKawaiiPhysicsCalibrationSettings>(CastChecked<UKawaiiPhysicsCalibrationSettings>(Assets[0].GetAsset()), GetTransientPackage()));
+	Settings.Reset(
+		DuplicateObject<UKawaiiPhysicsCalibrationSettings>(CastChecked<UKawaiiPhysicsCalibrationSettings>(Assets[0].GetAsset()), GetTransientPackage())
+	);
 	Details->SetObject(Settings.Get());
 	Message = TEXT("已载入测试集的工作副本。保存时会创建新资产。");
 	return FReply::Handled();
@@ -282,9 +283,7 @@ void SKawaiiPhysicsCalibrationPanel::OnAnimationsDropped(const FDragDropEvent&, 
 			continue;
 		}
 		auto* Animation = Cast<UAnimSequence>(Asset.GetAsset());
-		if (!Animation || Animation->IsValidAdditive()
-			|| (Settings->BodyMesh && Animation->GetSkeleton() != Settings->BodyMesh->GetSkeleton()))
-		{
+		if (!Animation || Animation->IsValidAdditive() || (Settings->BodyMesh && Animation->GetSkeleton() != Settings->BodyMesh->GetSkeleton())) {
 			continue;
 		}
 		FKawaiiCalibrationMotion& Motion = Settings->Motions.AddDefaulted_GetRef();

@@ -1,12 +1,18 @@
-#include "KawaiiClothingProxyPlayback.h"
-
 #include "Animation/AnimSequence.h"
 #include "Misc/AutomationTest.h"
 #include "UObject/StrongObjectPtr.h"
 
+#include "KawaiiClothingProxyPlayback.h"
+
 #if WITH_DEV_AUTOMATION_TESTS
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyActionMappingTest, "KawaiiPhysicsBaker.ClothingProxy.ActionMapping", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiProxyActionMappingTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiProxyActionMappingTest,
+	"KawaiiPhysicsBaker.ClothingProxy.ActionMapping",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiProxyActionMappingTest::RunTest(const FString&) {
 	TStrongObjectPtr<UAnimSequence> Attack(NewObject<UAnimSequence>());
 	TStrongObjectPtr<UAnimSequence> Landing(NewObject<UAnimSequence>());
 	TStrongObjectPtr<UKawaiiClothingProxyMotion> AttackMotion(NewObject<UKawaiiClothingProxyMotion>());
@@ -24,8 +30,9 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyActionMappingTest, "KawaiiPhysicsBa
 	B.Weight = 0.3f;
 	TArray<FKawaiiClothingProxyMotionSample> Samples;
 	FString Error;
-	TestTrue(TEXT("Body blend resolves to corresponding garment motions"),
-			 UKawaiiClothingProxyPlaybackLibrary::ResolveProxyMotionSamples(Set.Get(), {A, B}, Samples, Error)
+	TestTrue(
+		TEXT("Body blend resolves to corresponding garment motions"),
+		UKawaiiClothingProxyPlaybackLibrary::ResolveProxyMotionSamples(Set.Get(), {A, B}, Samples, Error)
 	);
 	if (TestEqual(TEXT("Both transition clips remain present"), Samples.Num(), 2)) {
 		TestTrue(TEXT("First action resolves by asset identity"), Samples[0].Motion == AttackMotion.Get());
@@ -36,12 +43,14 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxyActionMappingTest, "KawaiiPhysicsBa
 	TestFalse(TEXT("Duplicate source mapping is rejected"), UKawaiiClothingProxyPlaybackLibrary::ResolveProxyMotionSamples(Set.Get(), {A, B}, Samples, Error));
 	TestTrue(TEXT("Failed lookup cannot reuse stale capsules' source samples"), Samples.IsEmpty());
 	Set->Motions = {AttackMotion.Get()};
-	TestFalse(TEXT("A missing positive-weight mapping is explicit"),
-			  UKawaiiClothingProxyPlaybackLibrary::ResolveProxyMotionSamples(Set.Get(), {A, B}, Samples, Error)
+	TestFalse(
+		TEXT("A missing positive-weight mapping is explicit"),
+		UKawaiiClothingProxyPlaybackLibrary::ResolveProxyMotionSamples(Set.Get(), {A, B}, Samples, Error)
 	);
 	B.Weight = 0.f;
-	TestTrue(TEXT("An inactive missing clip does not prevent sampling"),
-			 UKawaiiClothingProxyPlaybackLibrary::ResolveProxyMotionSamples(Set.Get(), {A, B}, Samples, Error)
+	TestTrue(
+		TEXT("An inactive missing clip does not prevent sampling"),
+		UKawaiiClothingProxyPlaybackLibrary::ResolveProxyMotionSamples(Set.Get(), {A, B}, Samples, Error)
 	);
 	return true;
 }

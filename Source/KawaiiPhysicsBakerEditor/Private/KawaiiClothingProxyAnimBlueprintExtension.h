@@ -1,7 +1,9 @@
 #pragma once
 
 #include "AnimBlueprintExtension.h"
+
 #include "KawaiiClothingProxyAnimSubsystem.h"
+
 #include "KawaiiClothingProxyAnimBlueprintExtension.generated.h"
 
 /** Declaring both structs lets the standard AnimBP compiler install class/instance subsystem data. */
@@ -12,7 +14,7 @@ class UKawaiiClothingProxyAnimBlueprintExtension : public UAnimBlueprintExtensio
 
 private:
 	UPROPERTY()
-	FAnimSubsystem_KawaiiClothingProxy Subsystem;
+		FAnimSubsystem_KawaiiClothingProxy Subsystem;
 	UPROPERTY()
-	FAnimSubsystemInstance_KawaiiClothingProxy SubsystemInstance;
+		FAnimSubsystemInstance_KawaiiClothingProxy SubsystemInstance;
 };

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "KawaiiPhysicsSharedCollisionSubsystem.h"
+
 #include "KawaiiPhysicsBakeSharedCollisionSubsystem.generated.h"
 
 /**

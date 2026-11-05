@@ -2,7 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "Animation/AnimInstance.h"
-
 #include "AnimNode_KawaiiPhysics.h"
 
 #include "KawaiiCalibrationAnimInstance.generated.h"

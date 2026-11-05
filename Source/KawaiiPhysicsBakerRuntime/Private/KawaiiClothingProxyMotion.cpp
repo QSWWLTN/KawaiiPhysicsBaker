@@ -22,8 +22,8 @@ namespace {
 	bool Compatible(const UKawaiiClothingProxyMotion& A, const UKawaiiClothingProxyMotion& B) {
 		// Geometry snapshots are independently checked against DefinitionSignature by SampleLocalPose.
 		return A.Definition == B.Definition && A.DefinitionSignature == B.DefinitionSignature
-			   && A.SourceMesh.ToSoftObjectPath() == B.SourceMesh.ToSoftObjectPath() && A.BoneNames == B.BoneNames && A.ParentIndices == B.ParentIndices
-			   && A.RelativeTransform.Equals(B.RelativeTransform, 1.e-6);
+			&& A.SourceMesh.ToSoftObjectPath() == B.SourceMesh.ToSoftObjectPath() && A.BoneNames == B.BoneNames && A.ParentIndices == B.ParentIndices
+			&& A.RelativeTransform.Equals(B.RelativeTransform, 1.e-6);
 	}
 }
 
@@ -98,6 +98,17 @@ bool UKawaiiClothingProxyMotion::Validate(FString& Error) const {
 			return false;
 		}
 	}
+	if (!ValidateAnimationRevisions(Error)) { return false; }
+	for (int32 Key = 0; Key < LocalKeys.Num(); ++Key) {
+		if (!ValidTransform(LocalKeys[Key])) {
+			Error = FString::Printf(TEXT("代理运动的第 %d 个局部变换无效。"), Key);
+			return false;
+		}
+	}
+	return true;
+}
+
+bool UKawaiiClothingProxyMotion::ValidateAnimationRevisions(FString& Error) const {
 #if WITH_EDITOR
 	if (const UAnimSequence* Source = SourceAnimation.Get()) {
 		PRAGMA_DISABLE_DEPRECATION_WARNINGS
@@ -108,13 +119,16 @@ bool UKawaiiClothingProxyMotion::Validate(FString& Error) const {
 			return false;
 		}
 	}
-#endif
-	for (int32 Key = 0; Key < LocalKeys.Num(); ++Key) {
-		if (!ValidTransform(LocalKeys[Key])) {
-			Error = FString::Printf(TEXT("代理运动的第 %d 个局部变换无效。"), Key);
+	if (const UAnimSequence* Animation = BakedAnimation.Get(); Animation && BakedAnimationDataGuid.IsValid()) {
+		PRAGMA_DISABLE_DEPRECATION_WARNINGS
+		const FGuid Current = Animation->GetRawDataGuid();
+		PRAGMA_ENABLE_DEPRECATION_WARNINGS
+		if (Current != BakedAnimationDataGuid) {
+			Error = TEXT("衣物动画已修改，请在衣物动画回读面板重新读取、预览并更新代理轨迹。");
 			return false;
 		}
 	}
+#endif
 	return true;
 }
 
@@ -276,7 +290,7 @@ namespace KawaiiClothingProxy {
 				Capsule.End = ProxyToTarget.TransformPosition(ComponentPose[End].TransformPosition(Shape.EndOffset));
 				// Conservative radius for positive non-uniform scale, including both endpoint bindings.
 				Capsule.Radius = Shape.Radius * FMath::Max(ComponentPose[Start].GetMaximumAxisScale(), ComponentPose[End].GetMaximumAxisScale())
-								 * ProxyToTarget.GetMaximumAxisScale();
+					* ProxyToTarget.GetMaximumAxisScale();
 				if (Capsule.Start.ContainsNaN() || Capsule.End.ContainsNaN() || !FMath::IsFinite(Capsule.Radius) || Capsule.Radius <= 0.f) {
 					Error = TEXT("代理坐标转换产生了无效几何。");
 					return false;

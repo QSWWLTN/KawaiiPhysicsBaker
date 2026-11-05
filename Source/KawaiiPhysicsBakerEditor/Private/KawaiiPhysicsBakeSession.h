@@ -11,6 +11,7 @@ class UAnimSequence;
 class USkeletalMeshComponent;
 class UWorld;
 class AActor;
+class FKawaiiPhysicsBakePreviewCorrection;
 
 /** Shared by the visible viewport and offline recorder. No gameplay actor is touched. */
 class FKawaiiPhysicsBakeSession : public FGCObject
@@ -25,28 +26,43 @@ public:
 	void SeekPreview(int32 Frame);
 	void SetPreviewLooping(bool bLoop);
 	bool CanScrubPreview() const;
+
 	bool IsPreviewPaused() const { return bPreviewPaused; }
+
 	bool IsSeeking() const;
 	int32 GetPreviewFrame() const;
 	int32 GetRequestedFrame() const;
+
 	int32 GetLastFrame() const { return IntervalCount; }
+
 	int32 GetCachedFrameCount() const { return SampleIndex; }
+
 	float GetPreviewTime() const;
+
 	float GetDuration() const { return SourceLength; }
+
 	void StopPreview();
 	bool ResetPreview(FString& OutError);
 	bool StartBake(FString& OutError);
 	void Cancel();
+
 	bool IsRunning() const { return bRunning; }
+
 	bool IsBaking() const;
+
 	FText GetStatus() const { return Status; }
+
 	FText GetCollisionStatus() const { return CollisionStatus; }
+
 	float GetProgress() const;
 	UWorld* GetWorld() const;
 	FPreviewScene* GetPreviewScene() const;
 	USkeletalMeshComponent* GetMainComponent() const;
+
 	const TArray<TWeakObjectPtr<UObject>>& GetOutputAssets() const { return OutputAssets; }
+
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override;
+
 	virtual FString GetReferencerName() const override { return TEXT("FKawaiiPhysicsBakeSession"); }
 
 private:
@@ -68,6 +84,8 @@ private:
 	TObjectPtr<UKawaiiPhysicsBakeSettings> Settings = nullptr;
 	TObjectPtr<AActor> PreviewActor = nullptr;
 	TArray<TUniquePtr<FPart>> Parts;
+	TUniquePtr<FKawaiiPhysicsBakePreviewCorrection> PreviewCorrection;
+	int32 PreviewCollisionSourceIndex = INDEX_NONE;
 	TArray<TObjectPtr<UObject>> CreatedAssets;
 	TArray<TWeakObjectPtr<UObject>> OutputAssets;
 	FText Status;

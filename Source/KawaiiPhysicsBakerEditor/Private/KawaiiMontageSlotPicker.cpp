@@ -18,23 +18,18 @@
 
 #define LOCTEXT_NAMESPACE "KawaiiMontageSlotPicker"
 
-namespace KawaiiMontageSlotPicker
-{
-	namespace
-	{
-		FText NoneLabel()
-		{
+namespace KawaiiMontageSlotPicker {
+	namespace {
+		FText NoneLabel() {
 			return LOCTEXT("NoneSlot", "None（不追踪蒙太奇）");
 		}
 
-		FText UnregisteredLabel(FName Slot)
-		{
+		FText UnregisteredLabel(FName Slot) {
 			return FText::Format(LOCTEXT("UnregisteredSlot", "{0}（骨架中未注册）"), FText::FromName(Slot));
 		}
 	}
 
-	FText DescribeSlot(const USkeleton* Skeleton, FName Slot)
-	{
+	FText DescribeSlot(const USkeleton* Skeleton, FName Slot) {
 		if (Slot.IsNone()) {
 			return NoneLabel();
 		}
@@ -48,8 +43,7 @@ namespace KawaiiMontageSlotPicker
 		return UnregisteredLabel(Slot);
 	}
 
-	void BuildOptions(const USkeleton* Skeleton, const TSet<FName>& UsedSlots, FName Current, bool bHasCurrent, TArray<FOption>& OutOptions)
-	{
+	void BuildOptions(const USkeleton* Skeleton, const TSet<FName>& UsedSlots, FName Current, bool bHasCurrent, TArray<FOption>& OutOptions) {
 		OutOptions.Reset();
 		OutOptions.Add({NAME_None, NoneLabel()});
 		bool bCurrentListed = !bHasCurrent || Current.IsNone();
@@ -71,8 +65,7 @@ namespace KawaiiMontageSlotPicker
 		}
 	}
 
-	TSet<FName> GetUsedSlots(const UAnimBlueprint* Blueprint)
-	{
+	TSet<FName> GetUsedSlots(const UAnimBlueprint* Blueprint) {
 		TSet<FName> Used;
 		if (Blueprint) {
 			TArray<UAnimGraphNode_Slot*> Nodes;
@@ -87,8 +80,7 @@ namespace KawaiiMontageSlotPicker
 	}
 }
 
-void SKawaiiMontageSlotPicker::Construct(const FArguments&, TSharedRef<IPropertyHandle> InSlotHandle, UAnimBlueprint* InBlueprint)
-{
+void SKawaiiMontageSlotPicker::Construct(const FArguments&, TSharedRef<IPropertyHandle> InSlotHandle, UAnimBlueprint* InBlueprint) {
 	SlotHandle = InSlotHandle;
 	Blueprint = InBlueprint;
 	ChildSlot
@@ -128,14 +120,12 @@ void SKawaiiMontageSlotPicker::Construct(const FArguments&, TSharedRef<IProperty
 	RefreshOptions();
 }
 
-const USkeleton* SKawaiiMontageSlotPicker::GetSkeleton() const
-{
+const USkeleton* SKawaiiMontageSlotPicker::GetSkeleton() const {
 	const UAnimBlueprint* Owner = Blueprint.Get();
 	return Owner ? Owner->TargetSkeleton.Get() : nullptr;
 }
 
-void SKawaiiMontageSlotPicker::RefreshOptions()
-{
+void SKawaiiMontageSlotPicker::RefreshOptions() {
 	FName Current = NAME_None;
 	const bool bHasCurrent = SlotHandle.IsValid() && SlotHandle->GetValue(Current) == FPropertyAccess::Success;
 	TArray<KawaiiMontageSlotPicker::FOption> Built;
@@ -159,15 +149,11 @@ void SKawaiiMontageSlotPicker::RefreshOptions()
 	}
 }
 
-TSharedRef<SWidget> SKawaiiMontageSlotPicker::MakeOptionWidget(FOptionPtr Option)
-{
-	return SNew(STextBlock)
-		.Text(Option.IsValid() ? Option->Label : FText::GetEmpty())
-		.Font(IDetailLayoutBuilder::GetDetailFont());
+TSharedRef<SWidget> SKawaiiMontageSlotPicker::MakeOptionWidget(FOptionPtr Option) {
+	return SNew(STextBlock).Text(Option.IsValid() ? Option->Label : FText::GetEmpty()).Font(IDetailLayoutBuilder::GetDetailFont());
 }
 
-void SKawaiiMontageSlotPicker::OnSelectionChanged(FOptionPtr Option, ESelectInfo::Type SelectInfo)
-{
+void SKawaiiMontageSlotPicker::OnSelectionChanged(FOptionPtr Option, ESelectInfo::Type SelectInfo) {
 	if (SelectInfo == ESelectInfo::Direct || !Option.IsValid() || !SlotHandle.IsValid()) {
 		return;
 	}
@@ -175,21 +161,19 @@ void SKawaiiMontageSlotPicker::OnSelectionChanged(FOptionPtr Option, ESelectInfo
 	SlotHandle->SetValue(Option->Slot);
 }
 
-FText SKawaiiMontageSlotPicker::GetCurrentText() const
-{
+FText SKawaiiMontageSlotPicker::GetCurrentText() const {
 	FName Current = NAME_None;
 	switch (SlotHandle.IsValid() ? SlotHandle->GetValue(Current) : FPropertyAccess::Fail) {
-	case FPropertyAccess::Success:
-		return KawaiiMontageSlotPicker::DescribeSlot(GetSkeleton(), Current);
-	case FPropertyAccess::MultipleValues:
-		return LOCTEXT("MultipleValues", "多个值");
-	default:
-		return FText::GetEmpty();
+		case FPropertyAccess::Success:
+			return KawaiiMontageSlotPicker::DescribeSlot(GetSkeleton(), Current);
+		case FPropertyAccess::MultipleValues:
+			return LOCTEXT("MultipleValues", "多个值");
+		default:
+			return FText::GetEmpty();
 	}
 }
 
-FReply SKawaiiMontageSlotPicker::OnOpenSlotManager()
-{
+FReply SKawaiiMontageSlotPicker::OnOpenSlotManager() {
 	UAnimBlueprint* Owner = Blueprint.Get();
 	if (Owner && GEditor) {
 		if (IAssetEditorInstance* Editor = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->FindEditorForAsset(Owner, false)) {

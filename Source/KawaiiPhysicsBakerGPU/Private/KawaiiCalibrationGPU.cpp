@@ -34,7 +34,9 @@ class FKawaiiCalibrationCS : public FGlobalShader
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float4>, Scores)
 	END_SHADER_PARAMETER_STRUCT()
 
-	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) { return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5); }
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) {
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
 };
 
 IMPLEMENT_GLOBAL_SHADER(FKawaiiCalibrationCS, "/Plugin/KawaiiPhysicsBaker/Private/KawaiiCalibration.usf", "Main", SF_Compute);
@@ -60,19 +62,9 @@ TSharedPtr<FKawaiiCalibrationGPU, ESPMode::ThreadSafe> FKawaiiCalibrationGPU::St
 		OutError = TEXT("GPU 校准需要支持 SM5 计算着色器的实际图形接口，不支持 NullRHI，也不会自动改用 CPU 筛选。");
 		return nullptr;
 	}
-	if (In.Bones.IsEmpty()
-		|| In.Bones.Num() > 512
-		|| In.Frames.IsEmpty()
-		|| In.Frames.Num() > 20000
-		|| In.Candidates.IsEmpty()
-		|| In.Candidates.Num() > 1024
-		|| In.CapsuleCount > 32
-		|| In.Poses.Num() != In.Frames.Num() * In.Bones.Num()
-		|| (!In.Ranges.IsEmpty() && In.Ranges.Num() != In.Poses.Num())
-		|| In.Capsules.Num() != In.Frames.Num() * In.CapsuleCount * 2
-		|| !FMath::IsFinite(In.DeltaTime)
-		|| In.DeltaTime <= 0
-		|| In.DeltaTime > .1f)
+	if (In.Bones.IsEmpty() || In.Bones.Num() > 512 || In.Frames.IsEmpty() || In.Frames.Num() > 20000 || In.Candidates.IsEmpty() || In.Candidates.Num() > 1024
+		|| In.CapsuleCount > 32 || In.Poses.Num() != In.Frames.Num() * In.Bones.Num() || (!In.Ranges.IsEmpty() && In.Ranges.Num() != In.Poses.Num())
+		|| In.Capsules.Num() != In.Frames.Num() * In.CapsuleCount * 2 || !FMath::IsFinite(In.DeltaTime) || In.DeltaTime <= 0 || In.DeltaTime > .1f)
 	{
 		OutError = TEXT("GPU 校准数据无效或超出大小限制。");
 		return nullptr;
@@ -83,9 +75,7 @@ TSharedPtr<FKawaiiCalibrationGPU, ESPMode::ThreadSafe> FKawaiiCalibrationGPU::St
 			return nullptr;
 		}
 	}
-	const auto Finite = [](const FVector4f& V) {
-		return FMath::IsFinite(V.X) && FMath::IsFinite(V.Y) && FMath::IsFinite(V.Z) && FMath::IsFinite(V.W);
-	};
+	const auto Finite = [](const FVector4f& V) { return FMath::IsFinite(V.X) && FMath::IsFinite(V.Y) && FMath::IsFinite(V.Z) && FMath::IsFinite(V.W); };
 	for (const auto* Values : {&In.Bones, &In.Poses, &In.Ranges, &In.Capsules, &In.Frames, &In.Candidates}) {
 		for (const auto& V : *Values) {
 			if (!Finite(V)) {
@@ -94,13 +84,8 @@ TSharedPtr<FKawaiiCalibrationGPU, ESPMode::ThreadSafe> FKawaiiCalibrationGPU::St
 			}
 		}
 	}
-	if (In.Gravity.ContainsNaN()
-		|| !FMath::IsFinite(In.SoftMargin)
-		|| In.SoftMargin < 0
-		|| In.SoftMargin > 5
-		|| !FMath::IsFinite(In.SoftResponse)
-		|| In.SoftResponse < 0
-		|| In.SoftResponse > 100)
+	if (In.Gravity.ContainsNaN() || !FMath::IsFinite(In.SoftMargin) || In.SoftMargin < 0 || In.SoftMargin > 5 || !FMath::IsFinite(In.SoftResponse)
+		|| In.SoftResponse < 0 || In.SoftResponse > 100)
 	{
 		OutError = TEXT("GPU 碰撞参数超出运行时支持范围。");
 		return nullptr;
@@ -155,7 +140,7 @@ void FKawaiiCalibrationGPU::Tick() {
 				return Graph.RegisterExternalBuffer(Saved);
 			}
 			const FVector4f Zero(0, 0, 0, 0);
-			auto Buffer = CreateStructuredBuffer(Graph, Name, sizeof(FVector4f), FMath::Max(1, Data.Num()), Data.IsEmpty() ? &Zero : Data.GetData(), FMath::Max(1, Data.Num()) * sizeof(FVector4f));
+			auto Buffer = CreateStructuredBuffer( Graph, Name, sizeof(FVector4f), FMath::Max(1, Data.Num()), Data.IsEmpty() ? &Zero : Data.GetData(), FMath::Max(1, Data.Num()) * sizeof(FVector4f) );
 			Graph.QueueBufferExtraction(Buffer, &Saved);
 			return Buffer;
 		};
@@ -192,7 +177,13 @@ void FKawaiiCalibrationGPU::Tick() {
 		P->Velocities = Graph.CreateUAV(StateBuffer(S->Velocities, P->BoneCount * P->CandidateCount, TEXT("Kawaii.Velocities")));
 		auto Scores = StateBuffer(S->Scores, P->CandidateCount, TEXT("Kawaii.Scores"));
 		P->Scores = Graph.CreateUAV(Scores);
-		FComputeShaderUtils::AddPass(Graph, RDG_EVENT_NAME("Kawaii calibration candidates"), Shader, P, FIntVector(FMath::DivideAndRoundUp(P->CandidateCount, 64u), 1, 1));
+		FComputeShaderUtils::AddPass(
+			Graph,
+			RDG_EVENT_NAME("Kawaii calibration candidates"),
+			Shader,
+			P,
+			FIntVector(FMath::DivideAndRoundUp(P->CandidateCount, 64u), 1, 1)
+		);
 		const uint32 Next = P->FirstFrame + P->FrameCount;
 		if (Next == uint32(S->Input.Frames.Num())) {
 			S->Readback = MakeUnique<FRHIGPUBufferReadback>(TEXT("KawaiiCalibrationScores"));

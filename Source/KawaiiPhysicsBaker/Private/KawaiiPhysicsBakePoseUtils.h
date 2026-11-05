@@ -3,8 +3,7 @@
 #include "CoreMinimal.h"
 #include "ReferenceSkeleton.h"
 
-namespace KawaiiPhysicsBake
-{
+namespace KawaiiPhysicsBake {
 	/** Copy named bones in component space, then derive local transforms in the target hierarchy. */
 	bool BuildCopiedLocalPose(const FReferenceSkeleton& SourceSkeleton,
 							  const TArray<FTransform>& SourceCS,

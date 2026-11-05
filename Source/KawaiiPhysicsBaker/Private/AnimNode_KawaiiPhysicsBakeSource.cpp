@@ -6,6 +6,7 @@
 #include "Animation/AnimSequence.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
+
 #include "KawaiiPhysicsBakePoseUtils.h"
 
 void FAnimNode_KawaiiPhysicsBakeSource::PreUpdate(const UAnimInstance* InAnimInstance) {
@@ -42,7 +43,9 @@ void FAnimNode_KawaiiPhysicsBakeSource::PreUpdate(const UAnimInstance* InAnimIns
 			return;
 		}
 		if (Animation->AdditiveAnimType != AAT_None) {
-			SourceState->Error = TEXT("Bake Source requires an absolute animation sequence. Additive sequences need an explicit base pose and are not supported as the bake source.");
+			SourceState->Error = TEXT(
+				"Bake Source requires an absolute animation sequence. Additive sequences need an explicit base pose and are not supported as the bake source."
+			);
 			return;
 		}
 		const FBoneContainer& RequiredBones = InAnimInstance->GetRequiredBones();
@@ -81,11 +84,7 @@ void FAnimNode_KawaiiPhysicsBakeSource::PreUpdate(const UAnimInstance* InAnimIns
 	}
 
 	USkeletalMeshComponent* SourceComponent = BakeInstance->CopyPoseSource;
-	if (!SourceComponent
-		|| SourceComponent == TargetComponent
-		|| !SourceComponent->IsRegistered()
-		|| !SourceComponent->GetSkeletalMeshAsset())
-	{
+	if (!SourceComponent || SourceComponent == TargetComponent || !SourceComponent->IsRegistered() || !SourceComponent->GetSkeletalMeshAsset()) {
 		SourceState->Error = TEXT("Bake Source needs an animation sequence or a distinct, registered Copy Pose From component.");
 		return;
 	}
@@ -132,5 +131,5 @@ void FAnimNode_KawaiiPhysicsBakeSource::Evaluate_AnyThread(FPoseContext& Output)
 }
 
 void FAnimNode_KawaiiPhysicsBakeSource::GatherDebugData(FNodeDebugData& DebugData) {
-	DebugData.AddDebugItem(FString::Printf(TEXT("%s (Time: %.3f, Valid: %s)"), *DebugData.GetNodeName(this), SnapshotTime, bSnapshotValid ? TEXT("yes") : TEXT("no")), true);
+	DebugData.AddDebugItem( FString::Printf(TEXT("%s (Time: %.3f, Valid: %s)"), *DebugData.GetNodeName(this), SnapshotTime, bSnapshotValid ? TEXT("yes") : TEXT("no")), true );
 }

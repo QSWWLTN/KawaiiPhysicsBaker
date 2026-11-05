@@ -1,0 +1,315 @@
+#include "/Engine/Public/Platform.ush"
+
+struct FKawaiiChain
+{
+    uint4 Range;
+    float4 Parameters;
+    float4 AnchorRotation;
+    float4 AnchorPosition;
+    float4 AnchorScale;
+};
+StructuredBuffer<FKawaiiChain> Chains;
+StructuredBuffer<float4> PointInput;
+StructuredBuffer<float4> Capsules;
+RWStructuredBuffer<float4> History;
+RWStructuredBuffer<float4> Deltas;
+uint ResetHistory;
+uint AdvanceHistory;
+uint UseSideHistory;
+uint UseSmoothing;
+float SettleAlpha;
+float SmoothingAlpha;
+
+groupshared float3 P[64];
+groupshared float3 Ref[64];
+groupshared float3 Target[64];
+groupshared float3 Side[64];
+groupshared float3 Original[64];
+groupshared float Rest[64];
+groupshared uint HasHistory;
+groupshared uint Valid;
+
+float3 SafeNormal(float3 V)
+{
+    float S = dot(V, V);
+    return S > 1.e-8f ? V * rsqrt(S) : float3(0, 0, 0);
+}
+float4 QMul(float4 A, float4 B)
+{
+    return float4(A.w * B.xyz + B.w * A.xyz + cross(A.xyz, B.xyz), A.w * B.w - dot(A.xyz, B.xyz));
+}
+float3 Rotate(float4 Q, float3 V) { return V + 2.f * cross(Q.xyz, cross(Q.xyz, V) + Q.w * V); }
+float4 Conjugate(float4 Q) { return float4(-Q.xyz, Q.w); }
+float3 ToLocal(FKawaiiChain C, float3 V) { return Rotate(Conjugate(C.AnchorRotation), V - C.AnchorPosition.xyz) / C.AnchorScale.xyz; }
+float3 ToWorld(FKawaiiChain C, float3 V) { return Rotate(C.AnchorRotation, V * C.AnchorScale.xyz) + C.AnchorPosition.xyz; }
+float3 Closest(float3 V, float3 A, float3 B)
+{
+    float3 E = B - A;
+    float S = dot(E, E);
+    return A + (S > 1.e-8f ? saturate(dot(V - A, E) / S) : 0.f) * E;
+}
+float3 Perpendicular(float3 Axis)
+{
+    float3 N = SafeNormal(Axis);
+    if (dot(N, N) < 1.e-8f) { return float3(0, 1, 0); }
+    float3 A = abs(N);
+    float3 Seed = A.x <= A.y && A.x <= A.z ? float3(1, 0, 0) : (A.y <= A.z ? float3(0, 1, 0) : float3(0, 0, 1));
+    return SafeNormal(cross(N, Seed));
+}
+float3 ContactNormal(float3 V, float3 OnCapsule, float3 Reference, float3 A, float3 B, float3 Edge, float3 Previous)
+{
+    float3 D = V - OnCapsule;
+    if (HasHistory && UseSideHistory)
+    {
+        float3 S = Previous - Closest(Previous, A, B);
+        if (dot(S, S) > 1.e-6f && (dot(D, D) <= 1.e-8f || dot(D, S) < 0.f)) { return SafeNormal(S); }
+    }
+    if (dot(D, D) > 1.e-8f) { return SafeNormal(D); }
+    float3 Axis = B - A;
+    float3 ReferenceDelta = Reference - Closest(Reference, A, B);
+    float3 N = SafeNormal(cross(Edge, Axis));
+    if (dot(N, N) > 1.e-8f) { return dot(N, ReferenceDelta) < 0.f ? -N : N; }
+    if (dot(ReferenceDelta, ReferenceDelta) > 1.e-8f)
+    {
+        N = SafeNormal(ReferenceDelta);
+        float3 Direction = SafeNormal(Edge);
+        N = SafeNormal(N - Direction * dot(N, Direction));
+        if (dot(N, N) > 1.e-8f) { return N; }
+    }
+    return Perpendicular(dot(Axis, Axis) > 1.e-8f ? Axis : Edge);
+}
+void SegmentClosest(float3 A, float3 B, float3 C, float3 D, out float3 OnAB, out float3 OnCD)
+{
+    // Match FMath::SegmentDistToSegmentSafe, including its normalized parallel
+    // test and numerator tolerances. A different closest pair changes the pinned
+    // root's contact mass and can push a nearly parallel strand to another side.
+    float3 E1 = B - A, E2 = D - C, R = A - C;
+    float a = dot(E1, E1), e = dot(E2, E2), f = dot(E2, R);
+    bool PointAB = a < 1.e-8f, PointCD = e < 1.e-8f;
+    if (PointAB || PointCD)
+    {
+        OnAB = PointAB ? A : A + E1 * saturate(-dot(E1, R) / a);
+        OnCD = PointCD ? C : C + E2 * saturate(f / e);
+        return;
+    }
+
+    float b = dot(E1, E2), c = dot(E1, R);
+    float3 NormalAB = E1 * rsqrt(a), NormalCD = E2 * rsqrt(e);
+    float NormalDot = dot(NormalAB, NormalCD);
+    float NormalDenom = dot(NormalAB, NormalAB) * dot(NormalCD, NormalCD) - NormalDot * NormalDot;
+    float Denom = a * e - b * b;
+    float DenomAB = Denom, DenomCD = Denom;
+    float NumeratorAB, NumeratorCD;
+    if (NormalDenom < 1.e-4f || Denom < 1.e-4f)
+    {
+        NumeratorAB = 0.f;
+        DenomAB = 1.f;
+        NumeratorCD = f;
+        DenomCD = e;
+    }
+    else
+    {
+        NumeratorAB = b * f - e * c;
+        NumeratorCD = a * f - b * c;
+        if (NumeratorAB < 0.f)
+        {
+            NumeratorAB = 0.f;
+            NumeratorCD = f;
+            DenomCD = e;
+        }
+        else if (NumeratorAB > DenomAB)
+        {
+            NumeratorAB = DenomAB;
+            NumeratorCD = f + b;
+            DenomCD = e;
+        }
+    }
+
+    if (NumeratorCD < 0.f)
+    {
+        NumeratorCD = 0.f;
+        if (-c < 0.f) { NumeratorAB = 0.f; }
+        else if (-c > a) { NumeratorAB = DenomAB; }
+        else { NumeratorAB = -c; DenomAB = a; }
+    }
+    else if (NumeratorCD > DenomCD)
+    {
+        NumeratorCD = DenomCD;
+        if (-c + b < 0.f) { NumeratorAB = 0.f; }
+        else if (-c + b > a) { NumeratorAB = DenomAB; }
+        else { NumeratorAB = -c + b; DenomAB = a; }
+    }
+    float s = abs(NumeratorAB) < 1.e-4f ? 0.f : NumeratorAB / DenomAB;
+    float t = abs(NumeratorCD) < 1.e-4f ? 0.f : NumeratorCD / DenomCD;
+    OnAB = A + E1 * s;
+    OnCD = C + E2 * t;
+}
+void Lengths(uint Count, bool Reverse)
+{
+    for (uint Step = 0; Step + 1 < Count; ++Step)
+    {
+        uint A = Reverse ? Count - Step - 2 : Step, B = A + 1;
+        float WeightA = A == 0 ? 0.f : 1.f;
+        float3 D = P[B] - P[A];
+        float L = length(D);
+        float3 Direction = L > 1.e-8f ? D / L : SafeNormal(Ref[B] - Ref[A]);
+        if (dot(Direction, Direction) < 1.e-8f) { Direction = float3(1, 0, 0); }
+        float3 Correction = Direction * ((L - Rest[B]) / (WeightA + 1.f));
+        P[A] += WeightA * Correction;
+        P[B] -= Correction;
+    }
+}
+void PointContacts(FKawaiiChain Chain)
+{
+    for (uint i = 1; i < Chain.Range.y; ++i)
+    {
+        for (uint c = 0; c < Chain.Range.w; ++c)
+        {
+            float4 CA = Capsules[(Chain.Range.z + c) * 2];
+            float3 CB = Capsules[(Chain.Range.z + c) * 2 + 1].xyz;
+            float Radius = CA.w + Chain.Parameters.x;
+            float3 On = Closest(P[i], CA.xyz, CB);
+            float D2 = dot(P[i] - On, P[i] - On);
+            if (D2 < Radius * Radius)
+            {
+                P[i] += ContactNormal(P[i], On, Ref[i], CA.xyz, CB, float3(0, 0, 0), Side[i]) * (Radius - sqrt(D2));
+            }
+        }
+    }
+}
+float3 ClampLength(float3 V, float MaxLength)
+{
+    float L2 = dot(V, V);
+    return L2 > MaxLength * MaxLength ? V * (MaxLength * rsqrt(L2)) : V;
+}
+void SegmentContacts(FKawaiiChain Chain)
+{
+    for (uint A = 0; A + 1 < Chain.Range.y; ++A)
+    {
+        uint B = A + 1;
+        for (uint c = 0; c < Chain.Range.w; ++c)
+        {
+            float4 CA = Capsules[(Chain.Range.z + c) * 2];
+            float3 CB = Capsules[(Chain.Range.z + c) * 2 + 1].xyz;
+            float Radius = CA.w + Chain.Parameters.x;
+            // Conservative per-pair broad phase, recomputed after every preceding projection.
+            if (A == 0)
+            {
+                float3 RootDelta = P[0] - Closest(P[0], CA.xyz, CB);
+                // The fixed attachment may be inside the proxy. Its first edge has
+                // to exit the volume; point contacts and subsequent edges still collide.
+                if (dot(RootDelta, RootDelta) < Radius * Radius) { continue; }
+            }
+            if (any(max(P[A], P[B]) < min(CA.xyz, CB) - Radius) || any(min(P[A], P[B]) > max(CA.xyz, CB) + Radius)) { continue; }
+            float3 OnCloth, OnCapsule;
+            SegmentClosest(P[A], P[B], CA.xyz, CB, OnCloth, OnCapsule);
+            float D2 = dot(OnCloth - OnCapsule, OnCloth - OnCapsule);
+            if (D2 >= Radius * Radius) { continue; }
+            float3 Edge = P[B] - P[A];
+            float E2 = dot(Edge, Edge);
+            float T = E2 > 1.e-8f ? saturate(dot(OnCloth - P[A], Edge) / E2) : 0.f;
+            float MassA = A == 0 ? 0.f : 1.f;
+            float W = 1.f - T, Denom = MassA * W * W + T * T;
+            if (Denom <= 1.e-8f) { continue; }
+            float3 N = ContactNormal(OnCloth, OnCapsule, lerp(Ref[A], Ref[B], T), CA.xyz, CB, Edge, lerp(Side[A], Side[B], T));
+            float3 Correction = N * ((Radius - sqrt(D2)) / Denom);
+            P[A] += ClampLength(MassA * W * Correction, 2.f * Radius);
+            P[B] += ClampLength(T * Correction, 2.f * Radius);
+        }
+    }
+}
+float4 Between(float3 A, float3 B)
+{
+    A = SafeNormal(A); B = SafeNormal(B);
+    if (dot(A, A) < 1.e-8f || dot(B, B) < 1.e-8f) { return float4(0, 0, 0, 1); }
+    float W = 1.f + dot(A, B);
+    float4 Q = W >= 1.e-6f ? float4(cross(A, B), W)
+        : (abs(A.x) > abs(A.y) ? float4(-A.z, 0, A.x, 0) : float4(0, -A.z, A.y, 0));
+    return normalize(Q);
+}
+float3 DeltaVector(float3 V, float4 BaseQ, float3 BaseScale, float4 Q, float3 Scale)
+{
+    return Rotate(Q, Rotate(Conjugate(BaseQ), V) / BaseScale * Scale);
+}
+
+[numthreads(64, 1, 1)]
+void Main(uint3 Group : SV_GroupID, uint Lane : SV_GroupIndex)
+{
+    FKawaiiChain Chain = Chains[Group.x];
+    uint Count = Chain.Range.y, Global = Chain.Range.x + Lane;
+    if (Lane == 0)
+    {
+        HasHistory = ResetHistory == 0 && History[Chain.Range.x * 2].w > 0.f;
+        Valid = 1;
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (Lane < Count)
+    {
+        float4 Input = PointInput[Global * 6];
+        Target[Lane] = Input.xyz;
+        Ref[Lane] = PointInput[Global * 6 + 1].xyz;
+        Rest[Lane] = Input.w;
+        Side[Lane] = HasHistory ? ToWorld(Chain, History[Global * 2].xyz) : Target[Lane];
+        P[Lane] = Lane > 0 && HasHistory && UseSideHistory ? lerp(Side[Lane], Target[Lane], SettleAlpha) : Target[Lane];
+        Original[Lane] = P[Lane];
+    }
+    GroupMemoryBarrierWithGroupSync();
+    // Sequential projections within one chain preserve contact ordering and side history.
+    // Independent chains run in independent groups. Vertex skinning is fully parallel below.
+    if (Lane == 0)
+    {
+        for (uint Iteration = 0; Iteration < uint(Chain.Parameters.z); ++Iteration)
+        {
+            Lengths(Count, false);
+            Lengths(Count, true);
+            PointContacts(Chain);
+            SegmentContacts(Chain);
+            PointContacts(Chain);
+            P[0] = Target[0];
+            for (uint i = 0; i < Count; ++i) { if (!all(isfinite(P[i]))) { Valid = 0; } }
+            if (!Valid) { break; }
+        }
+        if (!Valid) { for (uint i = 0; i < Count; ++i) { P[i] = Original[i]; } }
+        if (AdvanceHistory)
+        {
+            for (uint i = 0; i < Count; ++i)
+            {
+                uint Id = Chain.Range.x + i;
+                History[Id * 2] = float4(ToLocal(Chain, P[i]), float(Valid));
+                float3 Offset = Rotate(Conjugate(Chain.AnchorRotation), P[i] - Target[i]) / Chain.AnchorScale.xyz;
+                if (HasHistory && UseSmoothing) { Offset = lerp(History[Id * 2 + 1].xyz, Offset, SmoothingAlpha); }
+                History[Id * 2 + 1] = float4(Offset, 0);
+                if (i > 0 && HasHistory && UseSmoothing) { P[i] = Target[i] + Rotate(Chain.AnchorRotation, Offset * Chain.AnchorScale.xyz); }
+            }
+            if (HasHistory && UseSmoothing)
+            {
+                for (uint i = 1; i < Count; ++i)
+                {
+                    float3 D = SafeNormal(P[i] - P[i - 1]);
+                    if (dot(D, D) < 1.e-8f) { D = SafeNormal(Target[i] - Target[i - 1]); }
+                    if (dot(D, D) > 1.e-8f) { P[i] = P[i - 1] + D * Rest[i]; }
+                }
+            }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    if (Lane < Count)
+    {
+        uint A = min(Lane, Count - 2);
+        float4 Swing = Between(Target[A + 1] - Target[A], P[A + 1] - P[A]);
+        float4 BaseQ = PointInput[Global * 6 + 2];
+        float3 BaseScale = PointInput[Global * 6 + 3].xyz;
+        float4 Q = QMul(Swing, PointInput[Global * 6 + 4]);
+        float Alpha = Valid ? Chain.Parameters.y : 0.f;
+        Q = normalize(lerp(BaseQ, dot(BaseQ, Q) < 0.f ? -Q : Q, Alpha));
+        float3 Scale = lerp(BaseScale, PointInput[Global * 6 + 5].xyz, Alpha);
+        float3 Position = lerp(Ref[Lane], P[Lane], Alpha);
+        float3 X = DeltaVector(float3(1, 0, 0), BaseQ, BaseScale, Q, Scale);
+        float3 Y = DeltaVector(float3(0, 1, 0), BaseQ, BaseScale, Q, Scale);
+        float3 Z = DeltaVector(float3(0, 0, 1), BaseQ, BaseScale, Q, Scale);
+        float3 T = Position - DeltaVector(Ref[Lane], BaseQ, BaseScale, Q, Scale);
+        Deltas[Global * 3] = float4(X.x, Y.x, Z.x, T.x);
+        Deltas[Global * 3 + 1] = float4(X.y, Y.y, Z.y, T.y);
+        Deltas[Global * 3 + 2] = float4(X.z, Y.z, Z.z, T.z);
+    }
+}

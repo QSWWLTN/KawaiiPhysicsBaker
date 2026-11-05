@@ -1,11 +1,6 @@
 #include "KawaiiPhysicsBakePoseUtils.h"
 
-bool KawaiiPhysicsBake::BuildCopiedLocalPose(const FReferenceSkeleton& SourceSkeleton,
-											 const TArray<FTransform>& SourceCS,
-											 const FReferenceSkeleton& TargetSkeleton,
-											 const FTransform& SourceToTarget,
-											 TArray<FTransform>& OutLocalPose,
-											 FString& OutError) {
+bool KawaiiPhysicsBake::BuildCopiedLocalPose(const FReferenceSkeleton& SourceSkeleton, const TArray<FTransform>& SourceCS, const FReferenceSkeleton& TargetSkeleton, const FTransform& SourceToTarget, TArray<FTransform>& OutLocalPose, FString& OutError) {
 	OutError.Reset();
 	OutLocalPose = TargetSkeleton.GetRefBonePose();
 	if (SourceCS.Num() != SourceSkeleton.GetNum()) {

@@ -54,6 +54,7 @@ public:
 	}
 
 	virtual void AddReferencedObjects(FReferenceCollector& Collector) override { Collector.AddReferencedObject(Component); }
+
 	virtual FString GetReferencerName() const override { return TEXT("KawaiiClothingProxyPreview"); }
 
 	void SetMesh(USkeletalMesh* Mesh) {
@@ -132,15 +133,18 @@ public:
 	SLATE_BEGIN_ARGS(SKawaiiClothingProxyViewport)
 	{}
 	SLATE_END_ARGS()
+
 	void Construct(const FArguments&, TSharedRef<FKawaiiClothingProxyPreview> InPreview) {
 		Preview = InPreview;
 		SEditorViewport::Construct(SEditorViewport::FArguments());
 	}
+
 	virtual ~SKawaiiClothingProxyViewport() {
 		if (Client) {
 			Client->Viewport = nullptr;
 		}
 	}
+
 	void FrameMesh() {
 		if (Preview->Component->GetSkeletalMeshAsset()) {
 			Client->FocusViewportOnBox(Preview->Component->Bounds.GetBox(), true);
@@ -159,6 +163,7 @@ protected:
 		Client->EngineShowFlags.SetSelectionOutline(false);
 		return Client.ToSharedRef();
 	}
+
 	virtual TSharedPtr<SWidget> MakeViewportToolbar() override { return nullptr; }
 
 private:
@@ -174,81 +179,134 @@ void SKawaiiClothingProxyPanel::Construct(const FArguments&) {
 	Details = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor").CreateDetailView(Args);
 	Details->OnFinishedChangingProperties().AddSP(this, &SKawaiiClothingProxyPanel::PropertiesChanged);
 	ChildSlot
-		[SNew(SVerticalBox)
-		 + SVerticalBox::Slot().AutoHeight().Padding(
-			 8)[SNew(STextBlock)
-					.AutoWrapText(true)
-					.Text(LOCTEXT(
-						"Help",
-						"选择衣物网格体，创建或载入代理定义。右侧编辑球体／胶囊的骨骼端点、局部偏移和半径，左侧实时显示参考姿态。两端重合时为球体。保存后把定义指定到烘焙部件的衣物代理字段。"))]
-		 + SVerticalBox::Slot().AutoHeight().Padding(
-			 8,
-			 0)[SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)[SNew(STextBlock).Text(LOCTEXT("Definition", "代理定义"))]
-				+ SHorizontalBox::Slot().FillWidth(1.f)[SNew(SObjectPropertyEntryBox)
-															.AllowedClass(UKawaiiClothingProxyAsset::StaticClass())
-															.ObjectPath_Lambda([this] {
-																return Definition.IsValid() ? Definition->GetPathName() : FString();
-															})
-															.OnObjectChanged(this, &SKawaiiClothingProxyPanel::SelectDefinition)]
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(12, 0, 8, 0)[SNew(STextBlock).Text(LOCTEXT("Mesh", "衣物网格体"))]
-				+ SHorizontalBox::Slot().FillWidth(1.f)[SNew(SObjectPropertyEntryBox)
-															.AllowedClass(USkeletalMesh::StaticClass())
-															.ObjectPath_Lambda([this] {
-																return SelectedMesh.IsValid() ? SelectedMesh->GetPathName() : FString();
-															})
-															.OnObjectChanged(this, &SKawaiiClothingProxyPanel::SelectMesh)]]
-		 + SVerticalBox::Slot().AutoHeight().Padding(
-			 8)[SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(6.f, 4.f))
-				+ SWrapBox::Slot()[SNew(SButton).Text(LOCTEXT("Create", "创建代理定义")).OnClicked(this, &SKawaiiClothingProxyPanel::CreateDefinition)]
-				+ SWrapBox::Slot()[SNew(SButton)
-									   .Text(LOCTEXT("Save", "校验并保存"))
-									   .IsEnabled_Lambda([this] {
-										   return Definition.IsValid();
-									   })
-									   .OnClicked(this, &SKawaiiClothingProxyPanel::SaveDefinition)]
-				+ SWrapBox::Slot()[SNew(SButton)
-									   .Text(LOCTEXT("Browse", "定位资产"))
-									   .IsEnabled_Lambda([this] {
-										   return Definition.IsValid();
-									   })
-									   .OnClicked(this, &SKawaiiClothingProxyPanel::BrowseDefinition)]
-				+ SWrapBox::Slot()[SNew(SButton).Text(LOCTEXT("Focus", "聚焦衣物")).OnClicked_Lambda([this] {
-					  Viewport->FrameMesh();
-					  return FReply::Handled();
-				  })]
-				+ SWrapBox::Slot()[SNew(SButton)
-									   .Text(LOCTEXT("Import", "追加 PhysicsAsset 代理"))
-									   .ToolTipText(LOCTEXT("ImportHelp", "追加衣物 PhysicsAsset 中有效的球体和胶囊，不导入盒体或凸包，不修改 PhysicsAsset。"))
-									   .IsEnabled_Lambda([this] {
-										   return Definition.IsValid() && SelectedMesh.IsValid();
-									   })
-									   .OnClicked(this, &SKawaiiClothingProxyPanel::ImportPhysicsAsset)]]
-		 + SVerticalBox::Slot().AutoHeight().Padding(
-			 8,
-			 0)[SNew(SHorizontalBox)
-				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)[SNew(STextBlock).Text(LOCTEXT("Bone", "新增代理的起点骨骼"))]
-				+ SHorizontalBox::Slot().FillWidth(1.f)[SAssignNew(BonePicker, SComboBox<TSharedPtr<FName>>) .OptionsSource(&BoneOptions) .OnGenerateWidget_Lambda([](TSharedPtr<FName> Item) {
-																return SNew(STextBlock).Text(Item.IsValid() ? FText::FromName(*Item) : FText::GetEmpty());
-															})
-															.OnSelectionChanged_Lambda([this](TSharedPtr<FName> Item, ESelectInfo::Type) {
-																SelectedBone = Item;
-															})[SNew(STextBlock).Text_Lambda([this] {
-																return SelectedBone.IsValid() ? FText::FromName(*SelectedBone) : LOCTEXT("SelectBone", "请选择骨骼");
-															})]]
-				+ SHorizontalBox::Slot().AutoWidth().Padding(8, 0)[SNew(SButton)
-																	   .Text(LOCTEXT("Add", "添加代理"))
-																	   .IsEnabled_Lambda([this] {
-																		   return Definition.IsValid() && SelectedBone.IsValid()
-																				  && Definition->Shapes.Num() < KawaiiClothingProxy::MaxShapes;
-																	   })
-																	   .OnClicked(this, &SKawaiiClothingProxyPanel::AddShape)]]
-		 + SVerticalBox::Slot().AutoHeight().Padding(8)[SNew(STextBlock).AutoWrapText(true).Text_Lambda([this] {
-			   return FText::FromString(Message);
-		   })]
-		 + SVerticalBox::Slot().FillHeight(
-			 1.f)[SNew(SSplitter) + SSplitter::Slot().Value(.58f)[SAssignNew(Viewport, SKawaiiClothingProxyViewport, PreviewScene.ToSharedRef())]
-				  + SSplitter::Slot().Value(.42f)[Details.ToSharedRef()]]];
+	[
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight().Padding(8)
+		[
+			SNew(STextBlock)
+			.AutoWrapText(true)
+			.Text(LOCTEXT(
+				"Help",
+				"选择衣物网格体，创建或载入代理定义。右侧编辑球体／胶囊的骨骼端点、局部偏移和半径，左侧实时显示参考姿态。两端重合时为球体。保存后把定义指定到烘焙部件的衣物代理字段。"
+			))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 0)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+			[
+				SNew(STextBlock).Text(LOCTEXT("Definition", "代理定义"))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.f)
+			[
+				SNew(SObjectPropertyEntryBox)
+				.AllowedClass(UKawaiiClothingProxyAsset::StaticClass())
+				.ObjectPath_Lambda([this] {
+					return Definition.IsValid() ? Definition->GetPathName() : FString();
+				})
+				.OnObjectChanged(this, &SKawaiiClothingProxyPanel::SelectDefinition)
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(12, 0, 8, 0)
+			[
+				SNew(STextBlock).Text(LOCTEXT("Mesh", "衣物网格体"))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.f)
+			[
+				SNew(SObjectPropertyEntryBox)
+				.AllowedClass(USkeletalMesh::StaticClass())
+				.ObjectPath_Lambda([this] {
+					return SelectedMesh.IsValid() ? SelectedMesh->GetPathName() : FString();
+				})
+				.OnObjectChanged(this, &SKawaiiClothingProxyPanel::SelectMesh)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8)
+		[
+			SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(6.f, 4.f))
+			+ SWrapBox::Slot()
+			[
+				SNew(SButton).Text(LOCTEXT("Create", "创建代理定义")).OnClicked(this, &SKawaiiClothingProxyPanel::CreateDefinition)
+			]
+			+ SWrapBox::Slot()
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("Save", "校验并保存"))
+				.IsEnabled_Lambda([this] { return Definition.IsValid(); })
+				.OnClicked(this, &SKawaiiClothingProxyPanel::SaveDefinition)
+			]
+			+ SWrapBox::Slot()
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("Browse", "定位资产"))
+				.IsEnabled_Lambda([this] { return Definition.IsValid(); })
+				.OnClicked(this, &SKawaiiClothingProxyPanel::BrowseDefinition)
+			]
+			+ SWrapBox::Slot()
+			[
+				SNew(SButton).Text(LOCTEXT("Focus", "聚焦衣物")).OnClicked_Lambda([this] {
+					Viewport->FrameMesh();
+					return FReply::Handled();
+				})
+			]
+			+ SWrapBox::Slot()
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("Import", "追加 PhysicsAsset 代理"))
+				.ToolTipText(LOCTEXT("ImportHelp", "追加衣物 PhysicsAsset 中有效的球体和胶囊，不导入盒体或凸包，不修改 PhysicsAsset。"))
+				.IsEnabled_Lambda([this] { return Definition.IsValid() && SelectedMesh.IsValid(); })
+				.OnClicked(this, &SKawaiiClothingProxyPanel::ImportPhysicsAsset)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8, 0)
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0, 0, 8, 0)
+			[
+				SNew(STextBlock).Text(LOCTEXT("Bone", "新增代理的起点骨骼"))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.f)
+			[
+				SAssignNew(BonePicker, SComboBox<TSharedPtr<FName>>)
+				.OptionsSource(&BoneOptions)
+				.OnGenerateWidget_Lambda([](TSharedPtr<FName> Item) {
+					return SNew(STextBlock).Text(Item.IsValid() ? FText::FromName(*Item) : FText::GetEmpty());
+				})
+				.OnSelectionChanged_Lambda([this](TSharedPtr<FName> Item, ESelectInfo::Type) {
+					SelectedBone = Item;
+				})
+				[
+					SNew(STextBlock).Text_Lambda([this] {
+						return SelectedBone.IsValid() ? FText::FromName(*SelectedBone) : LOCTEXT("SelectBone", "请选择骨骼");
+					})
+				]
+			]
+			+ SHorizontalBox::Slot().AutoWidth().Padding(8, 0)
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("Add", "添加代理"))
+				.IsEnabled_Lambda([this] {
+					return Definition.IsValid() && SelectedBone.IsValid() && Definition->Shapes.Num() < KawaiiClothingProxy::MaxShapes;
+				})
+				.OnClicked(this, &SKawaiiClothingProxyPanel::AddShape)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(8)
+		[
+			SNew(STextBlock).AutoWrapText(true).Text_Lambda([this] { return FText::FromString(Message); })
+		]
+		+ SVerticalBox::Slot().FillHeight(1.f)
+		[
+			SNew(SSplitter)
+			+ SSplitter::Slot().Value(.58f)
+			[
+				SAssignNew(Viewport, SKawaiiClothingProxyViewport, PreviewScene.ToSharedRef())
+			]
+			+ SSplitter::Slot().Value(.42f)
+			[
+				Details.ToSharedRef()
+			]
+		]
+	];
 	GEditor->RegisterForUndo(this);
 	TArray<FAssetData> Assets;
 	FModuleManager::LoadModuleChecked<FContentBrowserModule>("ContentBrowser").Get().GetSelectedAssets(Assets);
@@ -373,10 +431,7 @@ bool SKawaiiClothingProxyPanel::ValidateDefinition(FString& Error) const {
 FName SKawaiiClothingProxyPanel::MakeShapeId(const FString& Prefix) const {
 	for (int32 Index = 1;; ++Index) {
 		const FName Candidate(*FString::Printf(TEXT("%s_%d"), *Prefix, Index));
-		if (!Definition->Shapes.ContainsByPredicate([Candidate](const FKawaiiClothingProxyShape& Shape) {
-				return Shape.Id == Candidate;
-			}))
-		{
+		if (!Definition->Shapes.ContainsByPredicate([Candidate](const FKawaiiClothingProxyShape& Shape) { return Shape.Id == Candidate; })) {
 			return Candidate;
 		}
 	}
@@ -415,7 +470,11 @@ FReply SKawaiiClothingProxyPanel::SaveDefinition() {
 		Message = TEXT("代理定义校验通过，但保存失败，请检查文件权限或源代码管理状态。");
 		return FReply::Handled();
 	}
-	Message = FString::Printf(TEXT("已保存 %d 个代理：%s。形状或绑定改变需要重新烘焙；忽略目标骨链无需重新烘焙。"), Definition->Shapes.Num(), *Definition->GetPathName());
+	Message = FString::Printf(
+		TEXT("已保存 %d 个代理：%s。形状或绑定改变需要重新烘焙；忽略目标骨链无需重新烘焙。"),
+		Definition->Shapes.Num(),
+		*Definition->GetPathName()
+	);
 	return BrowseDefinition();
 }
 
@@ -492,11 +551,11 @@ FReply SKawaiiClothingProxyPanel::ImportPhysicsAsset() {
 	} else {
 		Transaction.Cancel();
 	}
-	Message =
-		FString::Printf(TEXT("已追加 %d 个有效球体／胶囊，保留原有代理。跳过 %d 个无效或超过 64 个上限的形状。盒体和凸包未导入；请在视口中检查贴合程度。"),
-						Added,
-						Skipped
-		);
+	Message = FString::Printf(
+		TEXT("已追加 %d 个有效球体／胶囊，保留原有代理。跳过 %d 个无效或超过 64 个上限的形状。盒体和凸包未导入；请在视口中检查贴合程度。"),
+		Added,
+		Skipped
+	);
 	return FReply::Handled();
 }
 

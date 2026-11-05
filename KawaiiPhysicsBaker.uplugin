@@ -10,7 +10,7 @@
   "Plugins": [{ "Name": "KawaiiPhysics", "Enabled": true }],
   "Modules": [
     { "Name": "KawaiiPhysicsBakerGPU", "Type": "UncookedOnly", "LoadingPhase": "PostConfigInit", "TargetAllowList": ["Editor"] },
-    { "Name": "KawaiiPhysicsBakerRuntime", "Type": "Runtime", "LoadingPhase": "Default" },
+    { "Name": "KawaiiPhysicsBakerRuntime", "Type": "Runtime", "LoadingPhase": "PostConfigInit" },
     { "Name": "KawaiiPhysicsBaker", "Type": "UncookedOnly", "LoadingPhase": "Default", "TargetAllowList": ["Editor"] },
     { "Name": "KawaiiPhysicsBakerEditor", "Type": "UncookedOnly", "LoadingPhase": "Default", "TargetAllowList": ["Editor"] }
   ]

@@ -26,6 +26,7 @@ public:
 	virtual ~SKawaiiClothingProxyPanel();
 	virtual void Tick(const FGeometry& AllottedGeometry, double CurrentTime, float DeltaTime) override;
 	virtual void PostUndo(bool bSuccess) override;
+
 	virtual void PostRedo(bool bSuccess) override { PostUndo(bSuccess); }
 
 private:

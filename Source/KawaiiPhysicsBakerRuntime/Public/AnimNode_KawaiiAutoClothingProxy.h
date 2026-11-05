@@ -2,9 +2,12 @@
 
 #include "CoreMinimal.h"
 #include "Animation/AnimNodeBase.h"
+
 #include "AnimNode_KawaiiPhysicsIKCorrection.h"
 #include "KawaiiClothingProxyPlayback.h"
 #include "KawaiiClothingProxySnapshot.h"
+#include "KawaiiClothingProxyActionTracking.h"
+
 #include "AnimNode_KawaiiAutoClothingProxy.generated.h"
 
 /** Follows players in the input branch and corrects the current pose against baked garment proxies. */
@@ -16,30 +19,30 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiAutoClothingProxy : public 
 	// The output pin is named Pose. A matching input property would generate an
 	// exposed-value handler for the output and overwrite this link at runtime.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Links", meta = (DisplayName = "Pose"))
-	FPoseLink SourcePose;
+		FPoseLink SourcePose;
 
 	/** Current garment's action set. Use this OR Proxy Motions. Changing the pin invalidates old colliders immediately. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clothing Proxy", meta = (PinShownByDefault))
-	TObjectPtr<UKawaiiClothingProxyMotionSet> ProxyMotionSet = nullptr;
+		TObjectPtr<UKawaiiClothingProxyMotionSet> ProxyMotionSet = nullptr;
 
 	/** Optional explicit action list for a single garment. Do not combine different garments in one list. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clothing Proxy", meta = (PinShownByDefault))
-	TArray<TObjectPtr<UKawaiiClothingProxyMotion>> ProxyMotions;
+		TArray<TObjectPtr<UKawaiiClothingProxyMotion>> ProxyMotions;
 
 	/** Defines the target hair/clothing chains. The current input pose is the correction baseline. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Correction", meta = (PinHiddenByDefault))
-	TObjectPtr<UKawaiiPhysicsIKCorrectionProfile> Profile = nullptr;
+		TObjectPtr<UKawaiiPhysicsIKCorrectionProfile> Profile = nullptr;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Correction", meta = (PinShownByDefault, ClampMin = "0", ClampMax = "1"))
-	float Alpha = 1.f;
+		float Alpha = 1.f;
 
 	/** Use the placement recorded during baking when the target is the original Main mesh. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clothing Proxy", meta = (PinHiddenByDefault))
-	bool bUseBakedRelativeTransform = true;
+		bool bUseBakedRelativeTransform = true;
 
 	/** Garment component space to this mesh's component space, used when Use Baked Relative Transform is false. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clothing Proxy", meta = (PinHiddenByDefault))
-	FTransform ProxyToTarget = FTransform::Identity;
+		FTransform ProxyToTarget = FTransform::Identity;
 
 	/** Proxy tracks are baked without root motion extraction. When the live pose extracts root motion
 	 * (Montage or Root Motion mode), its root bone stays locked while the recorded proxies keep travelling.
@@ -47,13 +50,20 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiAutoClothingProxy : public 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clothing Proxy",
 		meta = (PinHiddenByDefault, DisplayName = "代理跟随当前根骨骼",
 			ToolTip = "代理轨道烘焙时不提取 Root Motion。运行时若提取了 Root Motion（蒙太奇或 Root Motion 模式），身体根骨骼被锁定，而录制的代理仍沿原轨迹移动，导致碰撞体偏离身体、头发错乱。开启后代理会从录制的根骨骼刚性地移到当前根骨骼。未提取 Root Motion 时两者重合，不产生任何变化。"))
-	bool bFollowLiveRoot = true;
+		bool bFollowLiveRoot = true;
+
+	/** Retain baked garment motion under the current body bones after IK. Requires root following. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Clothing Proxy",
+		meta = (PinHiddenByDefault, EditCondition = "bFollowLiveRoot", DisplayName = "代理跟随当前身体姿态",
+			ToolTip = "让代理跟随身体 IK 后的骨盆、胸部及四肢，保留衣物相对身体的烘焙运动。用于 Motion Warping 攀爬等会改变身体姿态的动作。修正骨链自身及其子骨骼不作为跟随锚点，避免反馈。"))
+		bool bFollowLiveBodyPose = true;
 
 	/** Optional single full-body Slot in this input branch. Configure once for Montage playback. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Action Tracking", meta = (PinHiddenByDefault))
-	FName MontageSlot;
+		FName MontageSlot;
 
 	virtual bool HasPreUpdate() const override { return true; }
+
 	virtual void PreUpdate(const UAnimInstance* InAnimInstance) override;
 	virtual void Initialize_AnyThread(const FAnimationInitializeContext& Context) override;
 	virtual void CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) override;
@@ -66,15 +76,16 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiAutoClothingProxy : public 
 private:
 	friend struct FKawaiiAutoClothingProxyTestAccess;
 	UPROPERTY(Transient)
-	FAnimNode_KawaiiPhysicsIKCorrection Correction;
+		FAnimNode_KawaiiPhysicsIKCorrection Correction;
 	UPROPERTY(Transient)
-	TObjectPtr<UKawaiiClothingProxyMotionSet> SnapshotSet = nullptr;
+		TObjectPtr<UKawaiiClothingProxyMotionSet> SnapshotSet = nullptr;
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UKawaiiClothingProxyMotion>> SnapshotInputMotions;
+		TArray<TObjectPtr<UKawaiiClothingProxyMotion>> SnapshotInputMotions;
 	UPROPERTY(Transient)
-	TArray<TObjectPtr<UKawaiiClothingProxyMotion>> SnapshotAssets;
+		TArray<TObjectPtr<UKawaiiClothingProxyMotion>> SnapshotAssets;
 	TArray<TSharedPtr<const KawaiiClothingProxy::FSnapshot, ESPMode::ThreadSafe>> Tracks;
 	TArray<TArray<FName>> IgnoredRoots;
+	TArray<FName> SnapshotCorrectionRoots;
 	TMap<FSoftObjectPath, int32> ActionMap;
 	FString SnapshotError;
 	FString DebugReason;
@@ -84,4 +95,6 @@ private:
 	int32 CapsuleCount = 0;
 	/** Distance between the recorded proxy root and the live root in the last evaluation, for debugging. */
 	float RootReanchorDistance = 0.f;
+	bool BuildActionSamples(const TArray<KawaiiClothingProxy::FTrackedAction>& Actions,
+		TArray<KawaiiClothingProxy::FWeightedSnapshot>& Samples);
 };

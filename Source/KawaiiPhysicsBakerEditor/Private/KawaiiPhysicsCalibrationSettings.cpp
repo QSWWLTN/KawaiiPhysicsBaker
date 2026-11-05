@@ -5,7 +5,6 @@
 #include "Engine/SkeletalMesh.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PhysicsEngine/SkeletalBodySetup.h"
-
 #include "AnimGraphNode_KawaiiPhysics.h"
 #include "KawaiiPhysicsLimitsDataAsset.h"
 
@@ -153,7 +152,11 @@ bool UKawaiiPhysicsCalibrationSettings::ReadCollisionAndChains(FString& OutMessa
 		Limit.PlanarConstraint = Node->Node.PlanarConstraint;
 	}
 	bEditCollisionShapes = true;
-	OutMessage = FString::Printf(TEXT("已读取 %d 个碰撞形状、%d 条骨链。编辑下方参数后可校准，也可保存手动配置直接试用；手动配置不代表通过穿模验收。源蓝图和约束资产未修改。"), CollisionShapes.Num(), ChainLimits.Num());
+	OutMessage = FString::Printf(
+		TEXT("已读取 %d 个碰撞形状、%d 条骨链。编辑下方参数后可校准，也可保存手动配置直接试用；手动配置不代表通过穿模验收。源蓝图和约束资产未修改。"),
+		CollisionShapes.Num(),
+		ChainLimits.Num()
+	);
 	return true;
 }
 
@@ -194,8 +197,7 @@ bool UKawaiiPhysicsCalibrationSettings::ResolveConstraints(FString& OutSource, F
 	const auto& Ref = BodyMesh->GetRefSkeleton();
 	for (const auto& Capsule : Resolved) {
 		if (Capsule.bUseSockets || Ref.FindBoneIndex(Capsule.StartBone) == INDEX_NONE
-			|| (!Capsule.EndBone.IsNone() && Ref.FindBoneIndex(Capsule.EndBone) == INDEX_NONE)
-			|| !FMath::IsFinite(Capsule.Radius) || Capsule.Radius <= 0.f
+			|| (!Capsule.EndBone.IsNone() && Ref.FindBoneIndex(Capsule.EndBone) == INDEX_NONE) || !FMath::IsFinite(Capsule.Radius) || Capsule.Radius <= 0.f
 			|| Capsule.StartOffset.ContainsNaN() || Capsule.EndOffset.ContainsNaN())
 		{
 			OutError = TEXT("身体碰撞参数无效或人物骨架中缺少绑定骨骼；半径必须大于 0，不支持插槽。");
@@ -213,7 +215,10 @@ bool UKawaiiPhysicsCalibrationSettings::ResolveConstraints(FString& OutSource, F
 		for (const auto& Capsule : Resolved) {
 			for (FName Bone : {Capsule.StartBone, Capsule.EndBone.IsNone() ? Capsule.StartBone : Capsule.EndBone}) {
 				if (ClothingRef.FindBoneIndex(Bone) == INDEX_NONE) {
-					OutError = FString::Printf(TEXT("衣物输入缺少身体碰撞骨骼 %s。请补齐衣物输入骨骼，或启用“从挂接人物读取身体碰撞”并确保运行时挂接关系正确。"), *Bone.ToString());
+					OutError = FString::Printf(
+						TEXT("衣物输入缺少身体碰撞骨骼 %s。请补齐衣物输入骨骼，或启用“从挂接人物读取身体碰撞”并确保运行时挂接关系正确。"),
+						*Bone.ToString()
+					);
 					return false;
 				}
 			}
@@ -223,9 +228,8 @@ bool UKawaiiPhysicsCalibrationSettings::ResolveConstraints(FString& OutSource, F
 	TSet<FName> Seen;
 	for (const auto& Limit : ChainLimits) {
 		if (!Roots.Contains(Limit.RootBone.ToString()) || Seen.Contains(Limit.RootBone)
-			|| ClothingMesh->GetRefSkeleton().FindBoneIndex(Limit.RootBone) == INDEX_NONE
-			|| !FMath::IsFinite(Limit.LimitAngle) || Limit.LimitAngle < 0.f || Limit.LimitAngle > 180.f
-			|| static_cast<uint8>(Limit.PlanarConstraint) > static_cast<uint8>(EPlanarConstraint::Z))
+			|| ClothingMesh->GetRefSkeleton().FindBoneIndex(Limit.RootBone) == INDEX_NONE || !FMath::IsFinite(Limit.LimitAngle) || Limit.LimitAngle < 0.f
+			|| Limit.LimitAngle > 180.f || static_cast<uint8>(Limit.PlanarConstraint) > static_cast<uint8>(EPlanarConstraint::Z))
 		{
 			OutError = TEXT("骨链必须是所选节点的主根或附加根，不能重复；角度须在 0 至 180 度内。更换节点后请重新读取。");
 			return false;

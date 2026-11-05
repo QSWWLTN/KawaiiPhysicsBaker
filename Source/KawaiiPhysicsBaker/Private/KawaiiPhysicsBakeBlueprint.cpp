@@ -1,4 +1,5 @@
 #include "KawaiiPhysicsBakeBlueprint.h"
+
 #include "KawaiiPhysicsBakeAnimInstance.h"
 
 UKawaiiPhysicsBakeSettings::UKawaiiPhysicsBakeSettings() {
@@ -31,5 +32,6 @@ UKawaiiPhysicsBakeSettings* KawaiiPhysicsBake::FindOrAddSettings(UAnimBlueprint*
 }
 
 bool KawaiiPhysicsBake::IsBakeBlueprint(const UAnimBlueprint* Blueprint) {
-	return Blueprint && Blueprint->ParentClass && Blueprint->ParentClass->IsChildOf(UKawaiiPhysicsBakeAnimInstance::StaticClass()) && GetSettings(Blueprint) != nullptr;
+	return Blueprint && Blueprint->ParentClass && Blueprint->ParentClass->IsChildOf(UKawaiiPhysicsBakeAnimInstance::StaticClass())
+		&& GetSettings(Blueprint) != nullptr;
 }

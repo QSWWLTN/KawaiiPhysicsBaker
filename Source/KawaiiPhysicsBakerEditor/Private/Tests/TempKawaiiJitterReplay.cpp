@@ -1,7 +1,6 @@
 // TEMPORARY diagnostic (DSH session). Replays the runtime Automatic Clothing Proxy Correction path offline on the
 // real climb assets (snapshot sampling, live-root reanchoring, temporal correction at 60 Hz) and measures
 // frame-to-frame instability of the corrected hair. Delete after the in-game acceptance of the fix.
-#include "AnimNode_KawaiiPhysicsIKCorrection.h"
 #include "Animation/AnimInstance.h"
 #include "Animation/AnimInstanceProxy.h"
 #include "Animation/AnimSequence.h"
@@ -9,19 +8,20 @@
 #include "BoneContainer.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
-#include "KawaiiClothingProxyMotion.h"
-#include "KawaiiClothingProxySnapshot.h"
-#include "KawaiiPhysicsIKCorrectionProfile.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/MemStack.h"
 #include "Misc/Paths.h"
 #include "UObject/StrongObjectPtr.h"
 
+#include "AnimNode_KawaiiPhysicsIKCorrection.h"
+#include "KawaiiClothingProxyMotion.h"
+#include "KawaiiClothingProxySnapshot.h"
+#include "KawaiiPhysicsIKCorrectionProfile.h"
+
 #if WITH_DEV_AUTOMATION_TESTS
 
-namespace TempKawaiiJitter
-{
+namespace TempKawaiiJitter {
 	struct FReplayVariant
 	{
 		const TCHAR* Name;
@@ -31,8 +31,7 @@ namespace TempKawaiiJitter
 		bool bTemporal;
 	};
 
-	void ComponentSpace(const FCompactPose& Pose, TArray<FTransform>& Out)
-	{
+	void ComponentSpace(const FCompactPose& Pose, TArray<FTransform>& Out) {
 		const FBoneContainer& Bones = Pose.GetBoneContainer();
 		Out.SetNum(Pose.GetNumBones());
 		for (int32 Index = 0; Index < Out.Num(); ++Index) {
@@ -42,8 +41,7 @@ namespace TempKawaiiJitter
 		}
 	}
 
-	FTransform ProxyRootLocal(const KawaiiClothingProxy::FSnapshot& Snap, float Time)
-	{
+	FTransform ProxyRootLocal(const KawaiiClothingProxy::FSnapshot& Snap, float Time) {
 		const double Frame = FMath::Clamp(double(Time) * Snap.SampleRate, 0.0, double(Snap.NumFrames - 1));
 		const int32 A = FMath::FloorToInt(Frame);
 		const int32 B = FMath::Min(A + 1, Snap.NumFrames - 1);
@@ -54,18 +52,22 @@ namespace TempKawaiiJitter
 	}
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTempKawaiiJitterReplay, "KawaiiPhysicsBaker.TempDiagnostics.JitterReplay",
-								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTempKawaiiJitterReplay,
+	"KawaiiPhysicsBaker.TempDiagnostics.JitterReplay",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
-bool FTempKawaiiJitterReplay::RunTest(const FString&)
-{
+bool FTempKawaiiJitterReplay::RunTest(const FString&) {
 	using namespace TempKawaiiJitter;
 	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Assets/Anime/Lime/Lime.Lime"));
 	UAnimSequence* Body = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/KawaiiBakes/Baked_Jump_Climb_2h_Main_D163B64F.Baked_Jump_Climb_2h_Main_D163B64F"));
-	UKawaiiClothingProxyMotion* Motion = LoadObject<UKawaiiClothingProxyMotion>(nullptr,
-		TEXT("/Game/KawaiiBakes/Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion.Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion"));
-	UKawaiiPhysicsIKCorrectionProfile* Profile = LoadObject<UKawaiiPhysicsIKCorrectionProfile>(nullptr,
-		TEXT("/Game/BP/AnimeBP/Lime/DA_AnimBP_Lime_IKCorrection.DA_AnimBP_Lime_IKCorrection"));
+	UKawaiiClothingProxyMotion* Motion = LoadObject<UKawaiiClothingProxyMotion>(
+		nullptr,
+		TEXT("/Game/KawaiiBakes/Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion.Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion")
+	);
+	UKawaiiPhysicsIKCorrectionProfile* Profile =
+		LoadObject<UKawaiiPhysicsIKCorrectionProfile>(nullptr, TEXT("/Game/BP/AnimeBP/Lime/DA_AnimBP_Lime_IKCorrection.DA_AnimBP_Lime_IKCorrection"));
 	if (!TestTrue(TEXT("Assets load"), Mesh && Body && Motion && Profile)) {
 		return false;
 	}
@@ -107,7 +109,8 @@ bool FTempKawaiiJitterReplay::RunTest(const FString&)
 	for (const FKawaiiPhysicsIKCorrectionChain& Chain : Profile->Chains) {
 		const int32 Root = Required.GetPoseBoneIndexForBoneName(Chain.RootBone.BoneName);
 		for (int32 Bone = Required.GetPoseBoneIndexForBoneName(Chain.TipBone.BoneName); Bone != INDEX_NONE && Bone != Root;
-			 Bone = Required.GetParentBoneIndex(Bone)) {
+			 Bone = Required.GetParentBoneIndex(Bone))
+		{
 			ChainBones.Add(Bone);
 			ChainBoneNames.Add(Mesh->GetRefSkeleton().GetBoneName(Bone).ToString());
 		}
@@ -128,8 +131,15 @@ bool FTempKawaiiJitterReplay::RunTest(const FString&)
 	};
 
 	FString Json = TEXT("{\n");
-	Json += FString::Printf(TEXT("\"proxy_root\":\"%s\",\"target_root_index\":%d,\"chain_bones\":%d,\"frames\":%d,\"settle_time\":%.3f,\"smoothing_time\":%.3f,\n"),
-							*ProxyRootName.ToString(), TargetRoot, ChainBones.Num(), NumFrames, Profile->SettleTime, Profile->SmoothingTime);
+	Json += FString::Printf(
+		TEXT("\"proxy_root\":\"%s\",\"target_root_index\":%d,\"chain_bones\":%d,\"frames\":%d,\"settle_time\":%.3f,\"smoothing_time\":%.3f,\n"),
+		*ProxyRootName.ToString(),
+		TargetRoot,
+		ChainBones.Num(),
+		NumFrames,
+		Profile->SettleTime,
+		Profile->SmoothingTime
+	);
 	// Root drift between the locked body root and the proxies' recorded root.
 	Json += TEXT("\"root_drift_cm\":[");
 	{
@@ -141,7 +151,7 @@ bool FTempKawaiiJitterReplay::RunTest(const FString&)
 			Body->GetAnimationPose(PoseData, FAnimExtractContext(double(Time), true));
 			const FTransform BodyRoot = Output.Pose[FCompactPoseBoneIndex(0)];
 			const FTransform ProxyRoot = ProxyRootLocal(Snap, Time) * Snap.RelativeTransform;
-			Json += FString::Printf(TEXT("%s[%.2f,%.1f]"), Frame ? TEXT(",") : TEXT(""), Time, FVector::Distance(BodyRoot.GetTranslation(), ProxyRoot.GetTranslation()));
+			Json += FString::Printf( TEXT("%s[%.2f,%.1f]"), Frame ? TEXT(",") : TEXT(""), Time, FVector::Distance(BodyRoot.GetTranslation(), ProxyRoot.GetTranslation()) );
 		}
 	}
 	Json += TEXT("],\n\"variants\":{\n");
@@ -179,7 +189,7 @@ bool FTempKawaiiJitterReplay::RunTest(const FString&)
 				}
 				// Same mapping as FAnimNode_KawaiiAutoClothingProxy with Follow Live Root enabled.
 				if (Variant.bReanchor) {
-					KawaiiClothingProxy::ReanchorCapsules(Capsules, RecordedRoot, Output.Pose[FCompactPoseBoneIndex(0)] * Snap.RelativeTransform);
+					KawaiiClothingProxy::ReanchorCapsules(Capsules, RecordedRoot, Output.Pose[FCompactPoseBoneIndex(0)]);
 				}
 			}
 			Correction.ExternalCapsules = Capsules;
@@ -236,7 +246,9 @@ bool FTempKawaiiJitterReplay::RunTest(const FString&)
 			}
 		}
 		Jitter.Sort();
-		const auto Percentile = [&Jitter](double P) { return Jitter.IsEmpty() ? 0.0 : Jitter[FMath::Clamp(int32(P * (Jitter.Num() - 1)), 0, Jitter.Num() - 1)]; };
+		const auto Percentile = [&Jitter](double P) {
+			return Jitter.IsEmpty() ? 0.0 : Jitter[FMath::Clamp(int32(P * (Jitter.Num() - 1)), 0, Jitter.Num() - 1)];
+		};
 		double JitterSum = 0.0;
 		for (const double J : Jitter) {
 			JitterSum += J;
@@ -248,17 +260,34 @@ bool FTempKawaiiJitterReplay::RunTest(const FString&)
 		Order.Sort([&PerBone](int32 A, int32 B) { return PerBone[A] > PerBone[B]; });
 		FString Top;
 		for (int32 Index = 0; Index < FMath::Min(6, Order.Num()); ++Index) {
-			Top += FString::Printf(TEXT("%s\"%s\":%.3f"), Index ? TEXT(",") : TEXT(""), *ChainBoneNames[Order[Index]], PerBone[Order[Index]] / FMath::Max(1, NumFrames - 2));
+			Top += FString::Printf( TEXT("%s\"%s\":%.3f"), Index ? TEXT(",") : TEXT(""), *ChainBoneNames[Order[Index]], PerBone[Order[Index]] / FMath::Max(1, NumFrames - 2) );
 		}
 		FString ReasonText;
 		for (const TPair<FString, int32>& Pair : Reasons) {
 			ReasonText += FString::Printf(TEXT("%s\"%s\":%d"), ReasonText.IsEmpty() ? TEXT("") : TEXT(","), *Pair.Key, Pair.Value);
 		}
-		Json += FString::Printf(TEXT("%s\"%s\":{\"jitter_mean\":%.4f,\"jitter_p95\":%.4f,\"jitter_p99\":%.4f,\"jitter_max\":%.3f,\"direction_flips\":%d,\"jumps_over_5cm\":%d,\"reversals\":%d,")
-								TEXT("\"offset_mean\":%.3f,\"offset_max\":%.2f,\"penetration_mean\":%.3f,\"penetration_max\":%.3f,\"length_error_max\":%.4f,\"reasons\":{%s},\"top_bones\":{%s}}\n"),
-								VariantIndex ? TEXT(",") : TEXT(""), Variant.Name, Jitter.IsEmpty() ? 0.0 : JitterSum / Jitter.Num(), Percentile(0.95), Percentile(0.99),
-								Jitter.IsEmpty() ? 0.0 : Jitter.Last(), Flips, Jumps, Reversals, SumOffset / FMath::Max(1, NumFrames * ChainBones.Num()), MaxOffset,
-								SumPenetration / NumFrames, MaxPenetration, MaxLengthError, *ReasonText, *Top);
+		Json += FString::Printf(
+			TEXT(
+				"%s\"%s\":{\"jitter_mean\":%.4f,\"jitter_p95\":%.4f,\"jitter_p99\":%.4f,\"jitter_max\":%.3f,\"direction_flips\":%d,\"jumps_over_5cm\":%d,\"reversals\":%d,"
+			) TEXT("\"offset_mean\":%.3f,\"offset_max\":%.2f,\"penetration_mean\":%.3f,\"penetration_max\":%.3f,\"length_error_max\":%.4f,\"reasons\":{%s},\"top_bones\":{%s}}\n"
+			),
+			VariantIndex ? TEXT(",") : TEXT(""),
+			Variant.Name,
+			Jitter.IsEmpty() ? 0.0 : JitterSum / Jitter.Num(),
+			Percentile(0.95),
+			Percentile(0.99),
+			Jitter.IsEmpty() ? 0.0 : Jitter.Last(),
+			Flips,
+			Jumps,
+			Reversals,
+			SumOffset / FMath::Max(1, NumFrames * ChainBones.Num()),
+			MaxOffset,
+			SumPenetration / NumFrames,
+			MaxPenetration,
+			MaxLengthError,
+			*ReasonText,
+			*Top
+		);
 	}
 	// Reference: how much the uncorrected baked hair itself accelerates and reverses.
 	{
@@ -277,8 +306,13 @@ bool FTempKawaiiJitterReplay::RunTest(const FString&)
 		for (const double J : Jitter) {
 			Sum += J;
 		}
-		Json += FString::Printf(TEXT("},\n\"baked_hair_reference\":{\"accel_mean\":%.4f,\"accel_p95\":%.4f,\"accel_max\":%.3f,\"reversals\":%d}\n}\n"),
-								Sum / FMath::Max(1, Jitter.Num()), Jitter.IsEmpty() ? 0.0 : Jitter[int32(0.95 * (Jitter.Num() - 1))], Jitter.IsEmpty() ? 0.0 : Jitter.Last(), Reversals);
+		Json += FString::Printf(
+			TEXT("},\n\"baked_hair_reference\":{\"accel_mean\":%.4f,\"accel_p95\":%.4f,\"accel_max\":%.3f,\"reversals\":%d}\n}\n"),
+			Sum / FMath::Max(1, Jitter.Num()),
+			Jitter.IsEmpty() ? 0.0 : Jitter[int32(0.95 * (Jitter.Num() - 1))],
+			Jitter.IsEmpty() ? 0.0 : Jitter.Last(),
+			Reversals
+		);
 	}
 	const FString Path = FPaths::ProjectSavedDir() / TEXT("DSHInspect/jitter_report.json");
 	TestTrue(TEXT("Report written"), FFileHelper::SaveStringToFile(Json, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM));

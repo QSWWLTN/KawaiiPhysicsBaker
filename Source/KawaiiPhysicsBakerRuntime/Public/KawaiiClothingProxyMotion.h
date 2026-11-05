@@ -35,6 +35,11 @@ public:
 		FGuid BakeGroup;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
 		FGuid SourceDataGuid;
+	/** Changes when recorded tracks are replaced, including in-place manual readback. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
+		FGuid MotionRevision;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
+		FGuid BakedAnimationDataGuid;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
 		FString SourceSkeletonSignature;
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source")
@@ -62,8 +67,11 @@ public:
 
 	/** Full validation for authoring/export/tests; examines every transform. */
 	bool Validate(FString& Error) const;
+	/** Cheap loaded-animation revision check; does not scan tracks or load assets. */
+	bool ValidateAnimationRevisions(FString& Error) const;
 	/** Validates metadata and only the accessed keys, without scanning the full clip on each frame. */
 	bool SampleLocalPose(float Time, TArray<FTransform>& OutPose, FString& Error) const;
+
 	float GetDuration() const { return SampleRate > 0 && NumFrames > 0 ? static_cast<float>(NumFrames - 1) / SampleRate : 0.f; }
 
 private:

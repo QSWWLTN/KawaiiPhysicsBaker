@@ -9,6 +9,10 @@
 
 #include "AnimNode_KawaiiPhysicsIKCorrection.generated.h"
 
+namespace KawaiiPhysicsGPU {
+	struct FState;
+}
+
 /** Both inputs use this mesh's Skeleton. DriverPose must contain the body's final IK pose. */
 USTRUCT(BlueprintInternalUseOnly)
 struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiPhysicsIKCorrection : public FAnimNode_Base
@@ -36,7 +40,9 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiPhysicsIKCorrection : publi
 
 	virtual void Initialize_AnyThread(const FAnimationInitializeContext& Context) override;
 	virtual void CacheBones_AnyThread(const FAnimationCacheBonesContext& Context) override;
+
 	virtual bool HasPreUpdate() const override { return true; }
+
 	virtual void PreUpdate(const UAnimInstance* InAnimInstance) override;
 	virtual void Update_AnyThread(const FAnimationUpdateContext& Context) override;
 	virtual void Evaluate_AnyThread(FPoseContext& Output) override;
@@ -47,12 +53,20 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FAnimNode_KawaiiPhysicsIKCorrection : publi
 	void AccumulateDeltaTime(float DeltaTime);
 	/** Forget the previous solution, e.g. when the owner skips correction for a frame. The next solve is stateless. */
 	void ResetTemporalState();
+	void ReportGPUReason(const FString& Reason);
 
 	const FString& GetCorrectionDebugReason() const { return DebugReason; }
+
 	double GetMaxPenetration() const { return MaxPenetration; }
+
 	double GetMaxLengthError() const { return MaxLengthError; }
 
 private:
+	friend class FKawaiiGPUProjectClimbTest;
+	TSharedPtr<KawaiiPhysicsGPU::FState, ESPMode::ThreadSafe> GPUState;
+	/** Only a successful correction evaluation requests a deformer for the following update. */
+	bool bGPUCorrectionRequested = false;
+
 	/** Previous solution of one chain, stored relative to its live anchor so body motion never lags. */
 	struct FChainTemporalState
 	{

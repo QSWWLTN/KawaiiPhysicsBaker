@@ -2,7 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "UObject/GCObject.h"
-
 #include "AnimNode_KawaiiPhysics.h"
 
 #include "KawaiiCalibrationGPU.h"
@@ -34,8 +33,11 @@ public:
 	FString GetReportPath() const { return ReportPath; }
 
 	bool SaveResult(FString& OutError, bool bAllowUnaccepted = false);
+
 	bool IsResultAccepted() const { return bResultAccepted; }
+
 	bool HasUnacceptedResult() const { return Stage == EStage::Complete && Result && !bResultAccepted; }
+
 	bool ApplyToBlueprint(FString& OutError);
 
 public:

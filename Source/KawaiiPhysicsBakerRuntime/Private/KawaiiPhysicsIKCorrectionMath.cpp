@@ -5,8 +5,7 @@
 #include "KawaiiClothingProxyMotion.h"
 #include "KawaiiPhysicsBakerProfiling.h"
 
-namespace KawaiiPhysicsIKCorrection
-{
+namespace KawaiiPhysicsIKCorrection {
 	bool AppendProxyCapsules(const TArray<FKawaiiClothingProxyCapsule>& Proxies, TArray<FCapsule>& OutCapsules, FName TargetRootBone) {
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_AppendProxyCapsules);
 		if (Proxies.Num() > 64 || OutCapsules.Num() + Proxies.Num() > 128) {
@@ -30,8 +29,7 @@ namespace KawaiiPhysicsIKCorrection
 		return true;
 	}
 
-	namespace
-	{
+	namespace {
 		constexpr double DirectionTolerance = 1.e-8;
 		/** A previous point closer than 0.001 cm to the capsule axis carries no usable side. */
 		constexpr double SideTolerance = 1.e-6;
@@ -57,17 +55,14 @@ namespace KawaiiPhysicsIKCorrection
 			return FVector::CrossProduct(N, Seed).GetSafeNormal(DirectionTolerance);
 		}
 
-		FVector ContactNormal(const FVector& Point, const FVector& OnCapsule, const FVector& ReferencePoint, const FCapsule& Capsule, const FVector& ClothSegment,
-							  const FVector* SidePoint) {
+		FVector ContactNormal(const FVector& Point, const FVector& OnCapsule, const FVector& ReferencePoint, const FCapsule& Capsule, const FVector& ClothSegment, const FVector* SidePoint) {
 			const FVector Delta = Point - OnCapsule;
 			// Keep the side of the capsule this point occupied in the previous solution. Without it a strand
 			// that the input animation carries across the capsule axis is pushed out of the opposite surface,
 			// and the result flips between frames.
 			if (SidePoint) {
 				const FVector SideDelta = *SidePoint - ClosestOnSegment(*SidePoint, Capsule.Start, Capsule.End);
-				if (SideDelta.SizeSquared() > SideTolerance
-					&& (Delta.SizeSquared() <= DirectionTolerance || FVector::DotProduct(Delta, SideDelta) < 0.0))
-				{
+				if (SideDelta.SizeSquared() > SideTolerance && (Delta.SizeSquared() <= DirectionTolerance || FVector::DotProduct(Delta, SideDelta) < 0.0)) {
 					return SideDelta.GetSafeNormal(DirectionTolerance);
 				}
 			}
@@ -117,29 +112,33 @@ namespace KawaiiPhysicsIKCorrection
 			}
 		}
 
-		void ProjectPoints(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius,
-						   const TArray<FVector>* SidePoints) {
+		void ProjectPoints(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius, const TArray<FVector>* SidePoints) {
 			for (int32 Point = 1; Point < Points.Num(); ++Point) {
 				for (const FCapsule& Capsule : Capsules) {
 					const double Radius = Capsule.Radius + ParticleRadius;
 					const FVector OnCapsule = ClosestOnSegment(Points[Point], Capsule.Start, Capsule.End);
 					const double Distance = FVector::Distance(Points[Point], OnCapsule);
 					if (Distance < Radius) {
-						Points[Point] += ContactNormal(Points[Point], OnCapsule, Reference[Point], Capsule, FVector::ZeroVector,
-													   SidePoints ? &(*SidePoints)[Point] : nullptr) * (Radius - Distance);
+						Points[Point] += ContactNormal( Points[Point], OnCapsule, Reference[Point], Capsule, FVector::ZeroVector, SidePoints ? &(*SidePoints)[Point] : nullptr ) * (Radius - Distance);
 					}
 				}
 			}
 		}
 
-		void ProjectSegments(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius,
-							 const TArray<FVector>* SidePoints) {
+		void ProjectSegments(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius, const TArray<FVector>* SidePoints) {
 			for (int32 A = 0; A + 1 < Points.Num(); ++A) {
 				const int32 B = A + 1;
 				for (const FCapsule& Capsule : Capsules) {
+					const double Radius = Capsule.Radius + ParticleRadius;
+					// A pinned attachment can lie inside the body/garment proxy. Its
+					// first edge must exit that volume; pushing the entire edge outside
+					// is impossible and makes the free end slide/flip around the anchor.
+					// Keep point contacts and all later edges, and still report the residual.
+					if (A == 0 && FVector::DistSquared(Points[0], ClosestOnSegment(Points[0], Capsule.Start, Capsule.End)) < Radius * Radius) {
+						continue;
+					}
 					FVector OnCloth, OnCapsule;
 					FMath::SegmentDistToSegmentSafe(Points[A], Points[B], Capsule.Start, Capsule.End, OnCloth, OnCapsule);
-					const double Radius = Capsule.Radius + ParticleRadius;
 					const double Distance = FVector::Distance(OnCloth, OnCapsule);
 					if (Distance >= Radius) {
 						continue;
@@ -161,8 +160,7 @@ namespace KawaiiPhysicsIKCorrection
 					if (SidePoints) {
 						SidePoint = FMath::Lerp((*SidePoints)[A], (*SidePoints)[B], T);
 					}
-					const FVector Normal = ContactNormal(OnCloth, OnCapsule, FMath::Lerp(Reference[A], Reference[B], T), Capsule, Edge,
-														 SidePoints ? &SidePoint : nullptr);
+					const FVector Normal = ContactNormal(OnCloth, OnCapsule, FMath::Lerp(Reference[A], Reference[B], T), Capsule, Edge, SidePoints ? &SidePoint : nullptr);
 					const FVector Correction = Normal * ((Radius - Distance) / Denominator);
 					// A contact arbitrarily close to a pinned root has a tiny
 					// barycentric mass. Bound each projection instead of producing
@@ -209,15 +207,13 @@ namespace KawaiiPhysicsIKCorrection
 		return Result;
 	}
 
-	FDiagnostics
-	SolveChain(TArray<FVector>& Points, const TArray<double>& RestLengths, const TArray<FVector>& ReferencePoints, const TArray<FCapsule>& Capsules, int32 Iterations, double ParticleRadius,
-			   const TArray<FVector>* SidePoints) {
+	FDiagnostics SolveChain(TArray<FVector>& Points, const TArray<double>& RestLengths, const TArray<FVector>& ReferencePoints, const TArray<FCapsule>& Capsules, int32 Iterations, double ParticleRadius, const TArray<FVector>* SidePoints) {
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_SolveChain);
 		SCOPE_CYCLE_COUNTER(STAT_KawaiiBakerSolveChain);
 		FDiagnostics Invalid;
 		Invalid.bFinite = false;
-		if (Points.IsEmpty()
-			|| RestLengths.Num() != Points.Num() - 1 || ReferencePoints.Num() != Points.Num() || !FMath::IsFinite(ParticleRadius) || ParticleRadius < 0.0)
+		if (Points.IsEmpty() || RestLengths.Num() != Points.Num() - 1 || ReferencePoints.Num() != Points.Num() || !FMath::IsFinite(ParticleRadius)
+			|| ParticleRadius < 0.0)
 		{
 			return Invalid;
 		}
@@ -232,9 +228,7 @@ namespace KawaiiPhysicsIKCorrection
 			}
 		}
 		for (const FCapsule& Capsule : Capsules) {
-			if (!IsFinite(Capsule.Start)
-				|| !IsFinite(Capsule.End) || !FMath::IsFinite(Capsule.Radius) || Capsule.Radius < 0.0)
-			{
+			if (!IsFinite(Capsule.Start) || !IsFinite(Capsule.End) || !FMath::IsFinite(Capsule.Radius) || Capsule.Radius < 0.0) {
 				return Invalid;
 			}
 		}

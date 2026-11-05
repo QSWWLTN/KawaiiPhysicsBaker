@@ -10,8 +10,7 @@ class IPropertyHandle;
 class UAnimBlueprint;
 class USkeleton;
 
-namespace KawaiiMontageSlotPicker
-{
+namespace KawaiiMontageSlotPicker {
 	struct FOption
 	{
 		FName Slot;

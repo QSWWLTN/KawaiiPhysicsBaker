@@ -2,7 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
-
 #include "KawaiiPhysicsClothingCollisionProfile.h"
 #include "KawaiiPhysicsCalibrationProfile.h"
 
@@ -26,7 +25,8 @@ struct FKawaiiCalibrationConstraintPreset
 };
 
 USTRUCT(meta = (DisplayName = "可编辑身体碰撞形状"))
-struct FKawaiiCalibrationCollisionShape {
+struct FKawaiiCalibrationCollisionShape
+{
 	GENERATED_BODY()
 	UPROPERTY(EditAnywhere, Category = "碰撞", meta = (DisplayName = "启用"))
 		bool bEnabled = true;

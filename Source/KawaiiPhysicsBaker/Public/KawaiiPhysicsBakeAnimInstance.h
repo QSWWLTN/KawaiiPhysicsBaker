@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Animation/AnimInstance.h"
 #include "HAL/ThreadSafeCounter64.h"
+
 #include "KawaiiPhysicsBakeAnimInstance.generated.h"
 
 class UAnimSequence;

@@ -10,6 +10,7 @@
 #include "KawaiiPhysicsBakeBlueprint.generated.h"
 
 class UKawaiiPhysicsClothingCollisionProfile;
+class UKawaiiPhysicsIKCorrectionProfile;
 class UKawaiiClothingProxyAsset;
 class UKawaiiClothingProxyMotionSet;
 class UAnimSequence;
@@ -42,11 +43,14 @@ struct KAWAIIPHYSICSBAKER_API FKawaiiPhysicsBakePart
 	UPROPERTY(EditAnywhere, Category = "部件", meta = (DisplayName = "相对变换", ToolTip = "该部件在预览场景中的相对位置、旋转和缩放。"))
 		FTransform RelativeTransform = FTransform::Identity;
 
+	UPROPERTY(EditAnywhere, Category = "初次烘焙", meta = (DisplayName = "接收身体代理碰撞", ToolTip = "使用 Main 的代理定义，在每步身体求值完成后推动本部件的 Kawaii 骨链，写入初次衣物动画。需要设置主部件代理定义。手动修整后的动画回读不会再次运行物理。"))
+		bool bCollideWithMainProxy = false;
+
 	/** Optional compact proxy motion is recorded from the same final pose as this part's animation. */
 	UPROPERTY(EditAnywhere,
 			  Category = "代理运动",
 			  meta = (DisplayName = "衣物代理定义",
-					  ToolTip = "选择为此网格体创建的衣物代理。烘焙时导出代理运动；开启“预览衣物代理碰撞”后，也用于碰撞预览。单独指定本资产不会开启碰撞。"))
+					  ToolTip = "选择为此网格体创建的衣物代理。烘焙时导出代理运动；开启“预览运行时代理修正”后，也用于同帧修正预览。单独指定本资产不会开启修正。"))
 		TObjectPtr<UKawaiiClothingProxyAsset> ProxyDefinition = nullptr;
 
 	UPROPERTY(EditAnywhere,
@@ -56,7 +60,7 @@ struct KAWAIIPHYSICSBAKER_API FKawaiiPhysicsBakePart
 		TObjectPtr<UKawaiiClothingProxyMotionSet> ProxyMotionSet = nullptr;
 };
 
-/** Settings belong to the graph asset; baking never edits the source animation. */
+/** Settings belong to the graph asset; source replacement is an explicit export option. */
 UCLASS(EditInlineNew, DefaultToInstanced)
 class KAWAIIPHYSICSBAKER_API UKawaiiPhysicsBakeSettings : public UBlueprintExtension
 {
@@ -73,8 +77,8 @@ public:
 
 	UPROPERTY(EditAnywhere,
 			  Category = "代理运动",
-			  meta = (DisplayName = "主部件衣物代理定义",
-					  ToolTip = "可选。为 Main 同步导出代理运动资产。附加衣物的代理应在对应附加部件中指定；此设置不启用旧的实时衣物碰撞桥。"))
+			  meta = (DisplayName = "主部件代理定义（身体）",
+					  ToolTip = "为 Main 导出代理运动；附加部件开启“接收身体代理碰撞”后，也在初次衣物烘焙中作为身体碰撞体。衣物对头发的代理仍在对应附加部件中指定。"))
 		TObjectPtr<UKawaiiClothingProxyAsset> ProxyDefinition = nullptr;
 
 	UPROPERTY(EditAnywhere,
@@ -97,21 +101,32 @@ public:
 	UPROPERTY(EditAnywhere, Category = "输出", meta = (DisplayName = "输出名称前缀", ToolTip = "新动画资产的名称前缀，必须是合法且非空的资产名称。"))
 		FString OutputPrefix = TEXT("Baked");
 
+	UPROPERTY(EditAnywhere, Category = "输出", meta = (DisplayName = "烘焙后替换源动画（保持名称和引用）",
+		ToolTip = "默认关闭。开启后将 Main 烘焙结果写回源动画，代理的身体动画也直接引用该源动画，不再额外生成 Main 动画资产；保留原资产路径、名称、Notify、同步标记和 Root Motion 设置，现有蒙太奇及动画蓝图引用无需重接。覆盖前在输出目录保存 SourceBackup 备份。附加衣物仍单独导出；此选项不会替换部件动画。"))
+		bool bReplaceSourceAnimation = false;
+
 	/** Ordered dependencies: a part can only copy or collide against Main or an earlier part. */
 	UPROPERTY(EditAnywhere, Category = "附加部件", meta = (DisplayName = "附加部件", ToolTip = "身体、衣物等独立求值的部件，按列表顺序模拟；姿态来源只能引用更早的部件。", TitleProperty = "Name"))
 		TArray<FKawaiiPhysicsBakePart> Parts;
 
-	/** Uses the new definition only during preview; StartBake always prepares a separate scene. */
-	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "预览衣物代理碰撞（仅预览）",
-		ToolTip = "预览时使用来源部件的新衣物代理定义，为 Main 的 Kawaii 骨链提供碰撞；不需要旧碰撞配置。采用上一完成帧衣物姿态，不等同于运行时 IK 修正。此开关不影响导出；切换后自动重建预览。"))
+	/** Preview uses the runtime correction after every part has produced its uncorrected bake pose. */
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "预览运行时代理修正（仅预览）",
+		ToolTip = "使用运行时相同的代理采样与 IK 修正器，在本帧衣物求值完成后修正 Main。请选择与 Automatic Clothing Proxy Correction 节点相同的修正配置。预览在 CPU 上执行；运行时仍可切换 GPU。修正不写入烘焙，也不反馈到原生物理模拟。"))
 		bool bPreviewClothingProxyCollision = false;
 
-	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "预览接收骨链", EditCondition = "bPreviewClothingProxyCollision",
-		ToolTip = "可选。填写 Main 中 Kawaii 节点的根骨骼名；留空时自动选择所有已编译的节点。衣物代理定义中的“忽略目标骨链”优先于此列表。此列表仅控制新代理碰撞预览。"))
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "运行时修正配置", EditCondition = "bPreviewClothingProxyCollision",
+		ToolTip = "与角色 Automatic Clothing Proxy Correction 节点共用的 Profile，包含目标骨链、身体胶囊、迭代和时间平滑参数。预览不再从 Kawaii 节点猜测另一套碰撞设置。修改配置后重新编译并预览。"))
+		TObjectPtr<UKawaiiPhysicsIKCorrectionProfile> PreviewCorrectionProfile = nullptr;
+
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "运行时修正权重", EditCondition = "bPreviewClothingProxyCollision", ClampMin = "0", ClampMax = "1"))
+		float PreviewCorrectionAlpha = 1.f;
+
+	/** Retained for loading older settings. Runtime chain selection now belongs to PreviewCorrectionProfile. */
+	UPROPERTY()
 		TArray<FName> PreviewCollisionRootBones;
 
 	/** Legacy bridge is independent of the preview-only option and affects exported tracks. */
-	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "启用旧配置碰撞（写入烘焙）", ToolTip = "使用旧碰撞配置，影响预览和导出动画。新代理预览开启时，预览优先使用新定义；导出仍按此开关处理。需要有效配置、来源部件和至少 2 个预热帧。"))
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "启用旧配置碰撞（写入烘焙）", ToolTip = "使用旧碰撞配置，影响预览和导出动画。若同时预览运行时修正，会在相同的烘焙基础姿态上追加修正。需要有效配置、来源部件和至少 2 个预热帧。"))
 		bool bEnableClothingCollision = false;
 
 	/** The name of the part whose final pose supplies the Main mesh's clothing proxy. */
@@ -123,8 +138,7 @@ public:
 };
 
 /** Use Unreal's native AnimBlueprint/compiler; persist bake settings as an owned extension. */
-namespace KawaiiPhysicsBake
-{
+namespace KawaiiPhysicsBake {
 	KAWAIIPHYSICSBAKER_API UKawaiiPhysicsBakeSettings* GetSettings(const UAnimBlueprint* Blueprint);
 	KAWAIIPHYSICSBAKER_API UKawaiiPhysicsBakeSettings* FindOrAddSettings(UAnimBlueprint* Blueprint);
 	KAWAIIPHYSICSBAKER_API bool IsBakeBlueprint(const UAnimBlueprint* Blueprint);

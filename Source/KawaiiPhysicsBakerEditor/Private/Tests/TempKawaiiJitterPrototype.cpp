@@ -6,33 +6,31 @@
 #include "BoneContainer.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/SkeletalMesh.h"
-#include "KawaiiClothingProxyMotion.h"
-#include "KawaiiClothingProxySnapshot.h"
-#include "KawaiiPhysicsIKCorrectionMath.h"
-#include "KawaiiPhysicsIKCorrectionProfile.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/MemStack.h"
 #include "Misc/Paths.h"
 #include "UObject/StrongObjectPtr.h"
 
+#include "KawaiiClothingProxyMotion.h"
+#include "KawaiiClothingProxySnapshot.h"
+#include "KawaiiPhysicsIKCorrectionMath.h"
+#include "KawaiiPhysicsIKCorrectionProfile.h"
+
 #if WITH_DEV_AUTOMATION_TESTS
 
-namespace TempKawaiiProto
-{
+namespace TempKawaiiProto {
 	using KawaiiPhysicsIKCorrection::FCapsule;
 	constexpr double Tol = 1.e-8;
 
-	FVector Closest(const FVector& Point, const FVector& Start, const FVector& End)
-	{
+	FVector Closest(const FVector& Point, const FVector& Start, const FVector& End) {
 		const FVector Edge = End - Start;
 		const double LengthSquared = Edge.SizeSquared();
 		const double T = LengthSquared > Tol ? FMath::Clamp(FVector::DotProduct(Point - Start, Edge) / LengthSquared, 0.0, 1.0) : 0.0;
 		return Start + T * Edge;
 	}
 
-	FVector Perp(const FVector& Axis)
-	{
+	FVector Perp(const FVector& Axis) {
 		const FVector N = Axis.GetSafeNormal(Tol);
 		if (N.IsNearlyZero()) {
 			return FVector::YAxisVector;
@@ -42,8 +40,7 @@ namespace TempKawaiiProto
 		return FVector::CrossProduct(N, Seed).GetSafeNormal(Tol);
 	}
 
-	FVector Normal(const FVector& Point, const FVector& OnCapsule, const FVector& Reference, const FCapsule& Capsule, const FVector& ClothSegment, const FVector* Side)
-	{
+	FVector Normal(const FVector& Point, const FVector& OnCapsule, const FVector& Reference, const FCapsule& Capsule, const FVector& ClothSegment, const FVector* Side) {
 		const FVector Delta = Point - OnCapsule;
 		if (Side) {
 			const FVector SideDelta = *Side - Closest(*Side, Capsule.Start, Capsule.End);
@@ -74,8 +71,7 @@ namespace TempKawaiiProto
 		return Perp(Axis.SizeSquared() > Tol ? Axis : ClothSegment);
 	}
 
-	void ProjectLengths(TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FVector>& Reference, bool bReverse)
-	{
+	void ProjectLengths(TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FVector>& Reference, bool bReverse) {
 		for (int32 Step = 0; Step < Lengths.Num(); ++Step) {
 			const int32 A = bReverse ? Lengths.Num() - Step - 1 : Step;
 			const int32 B = A + 1;
@@ -92,8 +88,7 @@ namespace TempKawaiiProto
 		}
 	}
 
-	void ProjectPoints(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius, const TArray<FVector>* Side)
-	{
+	void ProjectPoints(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius, const TArray<FVector>* Side) {
 		for (int32 Point = 1; Point < Points.Num(); ++Point) {
 			for (const FCapsule& Capsule : Capsules) {
 				const double Radius = Capsule.Radius + ParticleRadius;
@@ -106,8 +101,7 @@ namespace TempKawaiiProto
 		}
 	}
 
-	void ProjectSegments(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius, const TArray<FVector>* Side)
-	{
+	void ProjectSegments(TArray<FVector>& Points, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, double ParticleRadius, const TArray<FVector>* Side) {
 		for (int32 A = 0; A + 1 < Points.Num(); ++A) {
 			const int32 B = A + 1;
 			for (const FCapsule& Capsule : Capsules) {
@@ -139,9 +133,7 @@ namespace TempKawaiiProto
 		}
 	}
 
-	void Solve(TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules,
-			   int32 Iterations, double ParticleRadius, const TArray<FVector>* Side)
-	{
+	void Solve(TArray<FVector>& Points, const TArray<double>& Lengths, const TArray<FVector>& Reference, const TArray<FCapsule>& Capsules, int32 Iterations, double ParticleRadius, const TArray<FVector>* Side) {
 		const FVector Root = Points[0];
 		for (int32 Iteration = 0; Iteration < Iterations; ++Iteration) {
 			ProjectLengths(Points, Lengths, Reference, false);
@@ -153,8 +145,7 @@ namespace TempKawaiiProto
 		}
 	}
 
-	void ComponentSpace(const FCompactPose& Pose, TArray<FTransform>& Out)
-	{
+	void ComponentSpace(const FCompactPose& Pose, TArray<FTransform>& Out) {
 		const FBoneContainer& Bones = Pose.GetBoneContainer();
 		Out.SetNum(Pose.GetNumBones());
 		for (int32 Index = 0; Index < Out.Num(); ++Index) {
@@ -164,8 +155,7 @@ namespace TempKawaiiProto
 		}
 	}
 
-	FTransform ProxyRootLocal(const KawaiiClothingProxy::FSnapshot& Snap, float Time)
-	{
+	FTransform ProxyRootLocal(const KawaiiClothingProxy::FSnapshot& Snap, float Time) {
 		const double Frame = FMath::Clamp(double(Time) * Snap.SampleRate, 0.0, double(Snap.NumFrames - 1));
 		const int32 A = FMath::FloorToInt(Frame);
 		const int32 B = FMath::Min(A + 1, Snap.NumFrames - 1);
@@ -189,23 +179,27 @@ namespace TempKawaiiProto
 		bool bBody;
 		bool bSide;
 		float Smoothing; // 0 disables; otherwise per-frame blend factor toward a larger offset
-		float Release;   // per-frame blend factor toward a smaller offset; 0 uses Smoothing
+		float Release; // per-frame blend factor toward a smaller offset; 0 uses Smoothing
 		float WarmPull = 0.f; // >0: start each solve from last frame's solution pulled toward the baked pose by this factor
 	};
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTempKawaiiJitterPrototype, "KawaiiPhysicsBaker.TempDiagnostics.JitterPrototype",
-								 EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FTempKawaiiJitterPrototype,
+	"KawaiiPhysicsBaker.TempDiagnostics.JitterPrototype",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
-bool FTempKawaiiJitterPrototype::RunTest(const FString&)
-{
+bool FTempKawaiiJitterPrototype::RunTest(const FString&) {
 	using namespace TempKawaiiProto;
 	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, TEXT("/Game/Assets/Anime/Lime/Lime.Lime"));
 	UAnimSequence* Body = LoadObject<UAnimSequence>(nullptr, TEXT("/Game/KawaiiBakes/Baked_Jump_Climb_2h_Main_D163B64F.Baked_Jump_Climb_2h_Main_D163B64F"));
-	UKawaiiClothingProxyMotion* Motion = LoadObject<UKawaiiClothingProxyMotion>(nullptr,
-		TEXT("/Game/KawaiiBakes/Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion.Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion"));
-	UKawaiiPhysicsIKCorrectionProfile* Profile = LoadObject<UKawaiiPhysicsIKCorrectionProfile>(nullptr,
-		TEXT("/Game/BP/AnimeBP/Lime/DA_AnimBP_Lime_IKCorrection.DA_AnimBP_Lime_IKCorrection"));
+	UKawaiiClothingProxyMotion* Motion = LoadObject<UKawaiiClothingProxyMotion>(
+		nullptr,
+		TEXT("/Game/KawaiiBakes/Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion.Baked_Jump_Climb_2h_Base_D163B64F_ProxyMotion")
+	);
+	UKawaiiPhysicsIKCorrectionProfile* Profile =
+		LoadObject<UKawaiiPhysicsIKCorrectionProfile>(nullptr, TEXT("/Game/BP/AnimeBP/Lime/DA_AnimBP_Lime_IKCorrection.DA_AnimBP_Lime_IKCorrection"));
 	if (!TestTrue(TEXT("Assets load"), Mesh && Body && Motion && Profile)) {
 		return false;
 	}
@@ -319,8 +313,13 @@ bool FTempKawaiiJitterPrototype::RunTest(const FString&)
 			}
 		}
 	}
-	FString Json = FString::Printf(TEXT("{\n\"baseline_points\":%lld,\"in_proxy_contact\":%lld,\"deeper_than_half_radius\":%lld,\"baked_hair_reversals\":%d,\n\"modes\":{\n"),
-								   PointSamples, InContact, Deep, BakedReversals);
+	FString Json = FString::Printf(
+		TEXT("{\n\"baseline_points\":%lld,\"in_proxy_contact\":%lld,\"deeper_than_half_radius\":%lld,\"baked_hair_reversals\":%d,\n\"modes\":{\n"),
+		PointSamples,
+		InContact,
+		Deep,
+		BakedReversals
+	);
 	for (int32 ModeIndex = 0; ModeIndex < Modes.Num(); ++ModeIndex) {
 		const FProtoMode& Mode = Modes[ModeIndex];
 		// Per chain: previous solved points and smoothed offsets, both stored in anchor-local space.
@@ -328,7 +327,7 @@ bool FTempKawaiiJitterPrototype::RunTest(const FString&)
 		PreviousLocal.SetNum(Chains.Num());
 		SmoothedLocal.SetNum(Chains.Num());
 		TArray<TArray<FVector>> Offsets; // [frame][flattened chain point]
-		TArray<double> Residuals;        // final overlap of every output point, including body capsules when enabled
+		TArray<double> Residuals; // final overlap of every output point, including body capsules when enabled
 		TArray<TArray<FVector>> FinalPositions;
 		for (int32 Frame = 0; Frame < NumFrames; ++Frame) {
 			const TArray<FTransform>& Base = BaseFrames[Frame];
@@ -341,8 +340,11 @@ bool FTempKawaiiJitterPrototype::RunTest(const FString&)
 					for (const FKawaiiPhysicsIKCorrectionCapsule& Definition : Profile->Capsules) {
 						const int32 Start = Required.GetPoseBoneIndexForBoneName(Definition.StartBone.BoneName);
 						const int32 End = Definition.EndBone.BoneName.IsNone() ? Start : Required.GetPoseBoneIndexForBoneName(Definition.EndBone.BoneName);
-						Capsules.Add({Base[Start].TransformPosition(Definition.StartOffset), Base[End].TransformPosition(Definition.EndOffset),
-									  Definition.Radius * FMath::Max(Base[Start].GetScale3D().GetAbsMax(), Base[End].GetScale3D().GetAbsMax())});
+						Capsules.Add(
+							{Base[Start].TransformPosition(Definition.StartOffset),
+							 Base[End].TransformPosition(Definition.EndOffset),
+							 Definition.Radius * FMath::Max(Base[Start].GetScale3D().GetAbsMax(), Base[End].GetScale3D().GetAbsMax())}
+						);
 					}
 				}
 				KawaiiPhysicsIKCorrection::AppendProxyCapsules(ProxyFrames[Frame], Capsules, Chain.RootName);
@@ -435,11 +437,26 @@ bool FTempKawaiiJitterPrototype::RunTest(const FString&)
 			Penetrating += R > 0.5 ? 1 : 0;
 			ResidualSum += FMath::Max(0.0, R);
 		}
-		Json += FString::Printf(TEXT("%s\"%s\":{\"jitter_mean\":%.4f,\"jitter_p95\":%.4f,\"jitter_p99\":%.4f,\"jitter_max\":%.3f,\"direction_flips\":%d,\"jumps_over_5cm\":%d,\"reversals\":%d,\"offset_mean\":%.3f,\"offset_max\":%.2f,")
-								TEXT("\"points_penetrating_over_0_5cm\":%d,\"residual_mean\":%.4f,\"residual_p99\":%.3f,\"residual_max\":%.2f}\n"),
-								ModeIndex ? TEXT(",") : TEXT(""), Mode.Name, Sum / Jitter.Num(), Pct(0.95), Pct(0.99), Jitter.Last(), Flips, Jumps, Reversals,
-								SumOffset / FMath::Max(1, NumFrames * PointCount), MaxOffset, Penetrating, ResidualSum / FMath::Max(1, Residuals.Num()),
-								Residuals[FMath::Clamp(int32(0.99 * (Residuals.Num() - 1)), 0, Residuals.Num() - 1)], Residuals.Last());
+		Json += FString::Printf(
+			TEXT(
+				"%s\"%s\":{\"jitter_mean\":%.4f,\"jitter_p95\":%.4f,\"jitter_p99\":%.4f,\"jitter_max\":%.3f,\"direction_flips\":%d,\"jumps_over_5cm\":%d,\"reversals\":%d,\"offset_mean\":%.3f,\"offset_max\":%.2f,"
+			) TEXT("\"points_penetrating_over_0_5cm\":%d,\"residual_mean\":%.4f,\"residual_p99\":%.3f,\"residual_max\":%.2f}\n"),
+			ModeIndex ? TEXT(",") : TEXT(""),
+			Mode.Name,
+			Sum / Jitter.Num(),
+			Pct(0.95),
+			Pct(0.99),
+			Jitter.Last(),
+			Flips,
+			Jumps,
+			Reversals,
+			SumOffset / FMath::Max(1, NumFrames * PointCount),
+			MaxOffset,
+			Penetrating,
+			ResidualSum / FMath::Max(1, Residuals.Num()),
+			Residuals[FMath::Clamp(int32(0.99 * (Residuals.Num() - 1)), 0, Residuals.Num() - 1)],
+			Residuals.Last()
+		);
 	}
 	Json += TEXT("}\n}\n");
 	const FString Path = FPaths::ProjectSavedDir() / TEXT("DSHInspect/jitter_prototype.json");

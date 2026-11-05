@@ -2,8 +2,7 @@
 
 #include "CoreMinimal.h"
 
-namespace KawaiiPhysicsBakeSampling
-{
+namespace KawaiiPhysicsBakeSampling {
 	/** Full duration is covered at a fixed integer rate; the last key samples the exact source end.
 	 * Non-integral source durations therefore have less than one sample of end-pose padding. */
 	inline int32 NumIntervals(double Length, int32 Rate) {

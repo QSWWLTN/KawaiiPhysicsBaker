@@ -1,5 +1,3 @@
-#include "KawaiiClothingProxyMotion.h"
-
 #include "Animation/AnimSequence.h"
 #include "Engine/SkeletalMesh.h"
 #include "Misc/AutomationTest.h"
@@ -8,11 +6,18 @@
 #include "Serialization/ObjectAndNameAsStringProxyArchive.h"
 #include "UObject/StrongObjectPtr.h"
 
+#include "KawaiiClothingProxyMotion.h"
 #include "KawaiiClothingProxyPlayback.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxySerializedPayloadTest, "KawaiiPhysicsBaker.ClothingProxy.SerializedExportPayload", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiProxySerializedPayloadTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiProxySerializedPayloadTest,
+	"KawaiiPhysicsBaker.ClothingProxy.SerializedExportPayload",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiProxySerializedPayloadTest::RunTest(const FString&) {
 	TStrongObjectPtr<USkeletalMesh> Mesh(NewObject<USkeletalMesh>());
 	TStrongObjectPtr<UKawaiiClothingProxyAsset> Definition(NewObject<UKawaiiClothingProxyAsset>());
 	Definition->PreviewMesh = Mesh.Get();
@@ -43,10 +48,12 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxySerializedPayloadTest, "KawaiiPhysi
 	Original->BoneNames = {TEXT("root"), TEXT("collar")};
 	Original->ParentIndices = {INDEX_NONE, 0};
 	Original->Shapes = Definition->Shapes;
-	Original->LocalKeys = {FTransform::Identity,
-						   FTransform(FVector(0, 0, 10)),
-						   FTransform(FVector(2, 0, 0)),
-						   FTransform(FQuat(FVector::ZAxisVector, UE_PI / 4), FVector(0, 0, 12))};
+	Original->LocalKeys = {
+		FTransform::Identity,
+		FTransform(FVector(0, 0, 10)),
+		FTransform(FVector(2, 0, 0)),
+		FTransform(FQuat(FVector::ZAxisVector, UE_PI / 4), FVector(0, 0, 12))
+	};
 	FString Error;
 	if (!TestTrue(TEXT("Complete export payload validates before serialization"), Original->Validate(Error))) {
 		AddError(Error);
@@ -89,9 +96,10 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiProxySerializedPayloadTest, "KawaiiPhysi
 	const bool bAfter = UKawaiiClothingProxyLibrary::SampleProxyMotion(Restored.Get(), Midpoint, Restored->RelativeTransform, After, Error);
 	TestTrue(TEXT("Both original and deserialized assets can be sampled"), bBefore && bAfter);
 	if (Before.Num() == 1 && After.Num() == 1) {
-		TestTrue(TEXT("Serialized tracks produce identical interpolated collision"),
-				 Before[0].Id == After[0].Id && Before[0].Start.Equals(After[0].Start, 1.e-6) && Before[0].End.Equals(After[0].End, 1.e-6)
-					 && FMath::IsNearlyEqual(Before[0].Radius, After[0].Radius, 1.e-6f)
+		TestTrue(
+			TEXT("Serialized tracks produce identical interpolated collision"),
+			Before[0].Id == After[0].Id && Before[0].Start.Equals(After[0].Start, 1.e-6) && Before[0].End.Equals(After[0].End, 1.e-6)
+				&& FMath::IsNearlyEqual(Before[0].Radius, After[0].Radius, 1.e-6f)
 		);
 	} else {
 		AddError(TEXT("Expected one collision capsule after serialization roundtrip."));

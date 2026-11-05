@@ -1,0 +1,84 @@
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/GpuSkinCommon.ush"
+
+uint NumVertices;
+uint BaseVertex;
+uint NumInfluences;
+uint WeightStride;
+uint WeightIndexSize;
+uint BoneMapOffset;
+uint HasMorph;
+Buffer<float4> BoneMatrices;
+Buffer<uint> WeightStream;
+Buffer<uint> WeightLookup;
+Buffer<float> MorphBuffer;
+Buffer<float> StaticPositions;
+Buffer<float4> StaticTangents;
+StructuredBuffer<int> BoneToPoint;
+StructuredBuffer<float4> Deltas;
+RWBuffer<float> OutputPositions;
+RWBuffer<SNORM float4> OutputTangents;
+
+[numthreads(64, 1, 1)]
+void Main(uint3 Thread : SV_DispatchThreadID)
+{
+    if (Thread.x >= NumVertices) { return; }
+    uint Vertex = BaseVertex + Thread.x;
+    float3 Position = float3(StaticPositions[Vertex * 3], StaticPositions[Vertex * 3 + 1], StaticPositions[Vertex * 3 + 2]);
+    float4 TX = TangentBias_SkinCache(StaticTangents[Vertex * 2]);
+    float4 TZ = TangentBias_SkinCache(StaticTangents[Vertex * 2 + 1]);
+    if (HasMorph)
+    {
+        uint M = Vertex * 6;
+        Position += float3(MorphBuffer[M], MorphBuffer[M + 1], MorphBuffer[M + 2]);
+        TZ.xyz = normalize(TZ.xyz + float3(MorphBuffer[M + 3], MorphBuffer[M + 4], MorphBuffer[M + 5]));
+    }
+    uint Count = NumInfluences;
+#if GPUSKIN_UNLIMITED_BONE_INFLUENCE
+    uint OffsetCount = WeightLookup[Vertex];
+    Count = OffsetCount & 255;
+    uint Offset = OffsetCount >> 8;
+    uint IndexSize = WeightIndexSize & 255, WeightSize = WeightIndexSize >> 8;
+#else
+    uint Offset = Vertex * WeightStride / 4;
+#endif
+    float3 SkinnedP = 0, SkinnedX = 0, SkinnedZ = 0;
+    for (uint i = 0; i < Count; ++i)
+    {
+#if GPUSKIN_UNLIMITED_BONE_INFLUENCE
+        uint IO = Offset + i * IndexSize;
+        uint Bone = WeightStream[IO];
+        if (IndexSize > 1) { Bone |= WeightStream[IO + 1] << 8; }
+        uint WO = Offset + Count * IndexSize + i * WeightSize;
+        float Weight = WeightSize > 1 ? float(WeightStream[WO] | (WeightStream[WO + 1] << 8)) / 65535.f : float(WeightStream[WO]) / 255.f;
+#else
+        uint Bone = GetBlendIndices(WeightStream, Offset, i / 4)[i & 3];
+        float Weight = GetBlendWeights(WeightStream, Offset, i / 4, Count)[i & 3];
+#endif
+        if (Weight <= 0.f) { continue; }
+        float3x4 M = float3x4(BoneMatrices[Bone * 3], BoneMatrices[Bone * 3 + 1], BoneMatrices[Bone * 3 + 2]);
+        float3 BP = mul(M, float4(Position, 1));
+        float3 BX = mul(M, float4(TX.xyz, 0));
+        float3 BZ = mul(M, float4(TZ.xyz, 0));
+#if KAWAII_APPLY_CORRECTION
+        int Point = BoneToPoint[BoneMapOffset + Bone];
+        if (Point >= 0)
+        {
+            float3x4 C = float3x4(Deltas[Point * 3], Deltas[Point * 3 + 1], Deltas[Point * 3 + 2]);
+            BP = mul(C, float4(BP, 1));
+            BX = mul(C, float4(BX, 0));
+            BZ = mul(C, float4(BZ, 0));
+        }
+#endif
+        SkinnedP += Weight * BP;
+        SkinnedX += Weight * BX;
+        SkinnedZ += Weight * BZ;
+    }
+    SkinnedZ = normalize(SkinnedZ);
+    SkinnedX = normalize(SkinnedX - SkinnedZ * dot(SkinnedX, SkinnedZ));
+    OutputPositions[Vertex * 3] = SkinnedP.x;
+    OutputPositions[Vertex * 3 + 1] = SkinnedP.y;
+    OutputPositions[Vertex * 3 + 2] = SkinnedP.z;
+    OutputTangents[Vertex * 2] = TangentUnbias_SkinCache(float4(SkinnedX, TX.w));
+    OutputTangents[Vertex * 2 + 1] = TangentUnbias_SkinCache(float4(SkinnedZ, TZ.w));
+}

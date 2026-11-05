@@ -1,4 +1,6 @@
 #include "SKawaiiPhysicsBakePanel.h"
+#include "SKawaiiClothingReadbackPanel.h"
+#include "KawaiiClothingProxyMotion.h"
 
 #include "Animation/AnimSequence.h"
 #include "Animation/Skeleton.h"
@@ -31,6 +33,7 @@ class SKawaiiPhysicsBakeViewport : public SEditorViewport
 public:
 	SLATE_BEGIN_ARGS(SKawaiiPhysicsBakeViewport) {}
 	SLATE_END_ARGS()
+
 	void Construct(const FArguments&, TSharedRef<FKawaiiPhysicsBakeSession> InSession) {
 		Session = InSession;
 		SEditorViewport::Construct(SEditorViewport::FArguments());
@@ -149,7 +152,10 @@ void SKawaiiPhysicsBakePanel::Construct(const FArguments&, UAnimBlueprint* InBlu
 			+ SWrapBox::Slot()
 			[
 				SNew(SButton)
-				.Text(LOCTEXT("Bake", "烘焙新动画"))
+				.Text_Lambda([this] {
+					const UKawaiiPhysicsBakeSettings* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+					return Settings && Settings->bReplaceSourceAnimation ? LOCTEXT("BakeReplace", "烘焙并替换源动画") : LOCTEXT("Bake", "烘焙新动画");
+				})
 				.IsEnabled_Lambda([this] { return !Session->IsBaking(); })
 				.OnClicked(this, &SKawaiiPhysicsBakePanel::Bake)
 			]
@@ -166,6 +172,20 @@ void SKawaiiPhysicsBakePanel::Construct(const FArguments&, UAnimBlueprint* InBlu
 				.Text(LOCTEXT("Results", "定位结果"))
 				.IsEnabled_Lambda([this] { return !Session->GetOutputAssets().IsEmpty(); })
 				.OnClicked(this, &SKawaiiPhysicsBakePanel::BrowseResults)
+			]
+			+ SWrapBox::Slot()
+			[
+				SNew(SButton).Text(LOCTEXT("Readback", "手动修整／回读衣物"))
+				.IsEnabled_Lambda([this] { return !Session->IsBaking(); })
+				.OnClicked_Lambda([this] {
+					UKawaiiClothingProxyMotion* Motion = nullptr;
+					for (const auto& Asset : Session->GetOutputAssets()) {
+						if (auto* Candidate = Cast<UKawaiiClothingProxyMotion>(Asset.Get()); Candidate && Candidate->PartName != TEXT("Main")) { Motion = Candidate; break; }
+					}
+					const auto* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+					KawaiiClothingReadback::OpenPanel(Motion, Settings ? Settings->MainMesh.Get() : nullptr, Settings ? Settings->PreviewCorrectionProfile.Get() : nullptr);
+					return FReply::Handled();
+				})
 			]
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8)
@@ -397,7 +417,8 @@ FText SKawaiiPhysicsBakePanel::TimelineText() const {
 		Session->GetDuration(),
 		Session->GetPreviewFrame(),
 		Session->GetLastFrame(),
-		Session->CanScrubPreview() ? Session->GetCachedFrameCount() : 0, Session->GetLastFrame() + 1
+		Session->CanScrubPreview() ? Session->GetCachedFrameCount() : 0,
+		Session->GetLastFrame() + 1
 	);
 	return FText::FromString(Timeline);
 }

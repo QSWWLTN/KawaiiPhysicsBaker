@@ -17,7 +17,8 @@ namespace {
 		TEXT("a.KawaiiPhysicsBaker.ProfileSolverDetails"),
 		0,
 		TEXT(
-			"Emit per-iteration length/point/segment constraint CPU trace scopes. Default 0. Requires cpu trace channel; detailed tracing adds measurement overhead."),
+			"Emit per-iteration length/point/segment constraint CPU trace scopes. Default 0. Requires cpu trace channel; detailed tracing adds measurement overhead."
+		),
 		ECVF_Default
 	);
 }

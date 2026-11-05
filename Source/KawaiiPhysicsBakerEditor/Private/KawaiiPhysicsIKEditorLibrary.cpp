@@ -8,6 +8,7 @@
 #include "EdGraph/EdGraph.h"
 #include "Engine/Blueprint.h"
 #include "Kismet2/BlueprintEditorUtils.h"
+
 #include "KawaiiPhysicsIKProfileGenerator.h"
 
 namespace {
@@ -24,11 +25,7 @@ namespace {
 bool UKawaiiPhysicsIKEditorLibrary::BindUseCachedPose(UEdGraphNode* UseNode, UEdGraphNode* SaveNode) {
 	UAnimGraphNode_UseCachedPose* Use = Cast<UAnimGraphNode_UseCachedPose>(UseNode);
 	UAnimGraphNode_SaveCachedPose* Save = Cast<UAnimGraphNode_SaveCachedPose>(SaveNode);
-	if (!IsValid(Use)
-		|| !IsValid(Save)
-		|| !IsValid(Use->GetGraph())
-		|| Use->GetGraph() != Save->GetGraph())
-	{
+	if (!IsValid(Use) || !IsValid(Save) || !IsValid(Use->GetGraph()) || Use->GetGraph() != Save->GetGraph()) {
 		return false;
 	}
 
@@ -120,12 +117,7 @@ bool UKawaiiPhysicsIKEditorLibrary::IsBlueprintUpToDate(const UBlueprint* Bluepr
 	return IsValid(Blueprint) && Blueprint->IsUpToDate();
 }
 
-UKawaiiPhysicsIKCorrectionProfile* UKawaiiPhysicsIKEditorLibrary::GenerateIKCorrectionProfile(UAnimBlueprint* AnimBlueprint,
-																							 bool bImportBodyCapsules,
-																							 bool bAssignToProxyNodes,
-																							 bool bSave,
-																							 bool bDryRun,
-																							 FString& Report) {
+UKawaiiPhysicsIKCorrectionProfile* UKawaiiPhysicsIKEditorLibrary::GenerateIKCorrectionProfile(UAnimBlueprint* AnimBlueprint, bool bImportBodyCapsules, bool bAssignToProxyNodes, bool bSave, bool bDryRun, FString& Report) {
 	KawaiiPhysicsIKProfileGenerator::FOptions Options;
 	Options.bImportBodyCapsules = bImportBodyCapsules;
 	Options.bAssignToProxyNodes = bAssignToProxyNodes;

@@ -1,14 +1,19 @@
-#include "KawaiiPhysicsIKCorrectionMath.h"
-
 #include "Misc/AutomationTest.h"
 
+#include "KawaiiPhysicsIKCorrectionMath.h"
 #include "KawaiiClothingProxyMotion.h"
 
 #if WITH_DEV_AUTOMATION_TESTS
 
 using namespace KawaiiPhysicsIKCorrection;
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyContactTest, "KawaiiPhysicsBaker.IKCorrection.ExternalProxyContact", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKProxyContactTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKProxyContactTest,
+	"KawaiiPhysicsBaker.IKCorrection.ExternalProxyContact",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiIKProxyContactTest::RunTest(const FString&) {
 	FKawaiiClothingProxyCapsule Proxy;
 	Proxy.Id = TEXT("Collar");
 	Proxy.Start = Proxy.End = FVector::ZeroVector;
@@ -28,7 +33,11 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyContactTest, "KawaiiPhysicsBaker.
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyRootFilterTest, "KawaiiPhysicsBaker.IKCorrection.ProxyRootFiltering", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKProxyRootFilterTest,
+	"KawaiiPhysicsBaker.IKCorrection.ProxyRootFiltering",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
 bool FKawaiiIKProxyRootFilterTest::RunTest(const FString&) {
 	FKawaiiClothingProxyCapsule Coat;
@@ -46,8 +55,9 @@ bool FKawaiiIKProxyRootFilterTest::RunTest(const FString&) {
 	TestTrue(TEXT("Each garment's rules are evaluated for the requested tail root"), AppendProxyCapsules({Coat, Cape}, TailCapsules, TEXT("Tail_Root")));
 	TestTrue(TEXT("The same proxies can be evaluated independently for hair"), AppendProxyCapsules({Coat, Cape}, HairCapsules, TEXT("Hair_back")));
 	if (TestEqual(TEXT("The tail keeps body collision and the other garment's proxy"), TailCapsules.Num(), 2)) {
-		TestTrue(TEXT("Ignoring a garment never removes body collision"),
-				 TailCapsules[0].Start.Equals(Body.Start) && TailCapsules[0].End.Equals(Body.End) && TailCapsules[0].Radius == Body.Radius
+		TestTrue(
+			TEXT("Ignoring a garment never removes body collision"),
+			TailCapsules[0].Start.Equals(Body.Start) && TailCapsules[0].End.Equals(Body.End) && TailCapsules[0].Radius == Body.Radius
 		);
 		TestTrue(TEXT("A different garment can still collide with the tail"), TailCapsules[1].Start.Equals(Cape.Start));
 	}
@@ -68,16 +78,22 @@ bool FKawaiiIKProxyRootFilterTest::RunTest(const FString&) {
 	TArray<FVector> HairPoints = Reference;
 	const FDiagnostics TailResult = SolveChain(TailPoints, Lengths, Reference, TailCapsules, 64, 0.1);
 	const FDiagnostics HairResult = SolveChain(HairPoints, Lengths, Reference, HairCapsules, 64, 0.1);
-	TestTrue(TEXT("The ignored garment cannot displace the tail or report residual contact"),
-			 TailResult.bFinite && TailPoints[1].Equals(Reference[1], 1.e-8) && TailResult.MaxPenetration == 0.0
+	TestTrue(
+		TEXT("The ignored garment cannot displace the tail or report residual contact"),
+		TailResult.bFinite && TailPoints[1].Equals(Reference[1], 1.e-8) && TailResult.MaxPenetration == 0.0
 	);
-	TestTrue(TEXT("Hair still corrects against the same garment"),
-			 HairResult.bFinite && !HairPoints[1].Equals(Reference[1], 0.001) && HairResult.MaxPenetration < 0.001
+	TestTrue(
+		TEXT("Hair still corrects against the same garment"),
+		HairResult.bFinite && !HairPoints[1].Equals(Reference[1], 0.001) && HairResult.MaxPenetration < 0.001
 	);
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKProxyFilterValidationTest, "KawaiiPhysicsBaker.IKCorrection.ProxyFilterAtomicValidation", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKProxyFilterValidationTest,
+	"KawaiiPhysicsBaker.IKCorrection.ProxyFilterAtomicValidation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
 
 bool FKawaiiIKProxyFilterValidationTest::RunTest(const FString&) {
 	FKawaiiClothingProxyCapsule Valid;
@@ -106,7 +122,13 @@ bool FKawaiiIKProxyFilterValidationTest::RunTest(const FString&) {
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKWarpTest, "KawaiiPhysicsBaker.IKCorrection.PoseMapping", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKWarpTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKWarpTest,
+	"KawaiiPhysicsBaker.IKCorrection.PoseMapping",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiIKWarpTest::RunTest(const FString&) {
 	const FTransform Bone(FQuat(FVector::YAxisVector, 0.2), FVector(12, 4, -20));
 	const FTransform Anchor(FQuat::Identity, FVector(2, 0, 10));
 	const FTransform Driver(FQuat(FVector::XAxisVector, 0.1), FVector(5, 1, -3));
@@ -129,15 +151,28 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKWarpTest, "KawaiiPhysicsBaker.IKCorrec
 
 	const FTransform LiftedDriver(FQuat::Identity, FVector(0, 0, 20));
 	const FTransform Identity = FTransform::Identity;
-	TestTrue(TEXT("Unweighted leg motion leaves the anchor mapping alone"), WarpTransform(Bone, Identity, Identity, Identity, LiftedDriver, 0.f).Equals(Bone, 1.e-5));
-	TestTrue(TEXT("Half influence transfers half the driver displacement"),
-			 WarpTransform(Bone, Identity, Identity, Identity, LiftedDriver, 0.5f).GetTranslation().Equals(Bone.GetTranslation() + FVector(0, 0, 10), 1.e-5));
-	TestTrue(TEXT("Full influence transfers the complete driver displacement"),
-			 WarpTransform(Bone, Identity, Identity, Identity, LiftedDriver, 1.f).GetTranslation().Equals(Bone.GetTranslation() + FVector(0, 0, 20), 1.e-5));
+	TestTrue(
+		TEXT("Unweighted leg motion leaves the anchor mapping alone"),
+		WarpTransform(Bone, Identity, Identity, Identity, LiftedDriver, 0.f).Equals(Bone, 1.e-5)
+	);
+	TestTrue(
+		TEXT("Half influence transfers half the driver displacement"),
+		WarpTransform(Bone, Identity, Identity, Identity, LiftedDriver, 0.5f).GetTranslation().Equals(Bone.GetTranslation() + FVector(0, 0, 10), 1.e-5)
+	);
+	TestTrue(
+		TEXT("Full influence transfers the complete driver displacement"),
+		WarpTransform(Bone, Identity, Identity, Identity, LiftedDriver, 1.f).GetTranslation().Equals(Bone.GetTranslation() + FVector(0, 0, 20), 1.e-5)
+	);
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKPointContactTest, "KawaiiPhysicsBaker.IKCorrection.PointContactAndLength", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKPointContactTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKPointContactTest,
+	"KawaiiPhysicsBaker.IKCorrection.PointContactAndLength",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiIKPointContactTest::RunTest(const FString&) {
 	TArray<FVector> Points{FVector(0, 0, 3), FVector(0.2, 0, 0.2)};
 	const TArray<FVector> Reference = Points;
 	const TArray<double> Lengths{FVector::Distance(Points[0], Points[1])};
@@ -151,7 +186,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKPointContactTest, "KawaiiPhysicsBaker.
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKSegmentContactTest, "KawaiiPhysicsBaker.IKCorrection.SegmentContact", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKSegmentContactTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKSegmentContactTest,
+	"KawaiiPhysicsBaker.IKCorrection.SegmentContact",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiIKSegmentContactTest::RunTest(const FString&) {
 	// Both joints start outside the leg. A particle-only solver would miss this intersection.
 	TArray<FVector> Points{FVector(-3, 0, 0), FVector(3, 0, 0)};
 	const TArray<FVector> Reference = Points;
@@ -169,7 +210,13 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKSegmentContactTest, "KawaiiPhysicsBake
 	return true;
 }
 
-IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKConflictTest, "KawaiiPhysicsBaker.IKCorrection.PinnedRootConflictAndDegeneracy", EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)  bool FKawaiiIKConflictTest::RunTest(const FString&) {
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKConflictTest,
+	"KawaiiPhysicsBaker.IKCorrection.PinnedRootConflictAndDegeneracy",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiIKConflictTest::RunTest(const FString&) {
 	TArray<FVector> Points{FVector::ZeroVector, FVector(2, 0, 0)};
 	const TArray<FVector> Reference = Points;
 	const TArray<double> Lengths{2.0};
@@ -191,6 +238,31 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FKawaiiIKConflictTest, "KawaiiPhysicsBaker.IKCo
 	const FDiagnostics Invalid = SolveChain(Degenerate, {}, DegenerateReference, Capsules, 16, 0.0);
 	TestFalse(TEXT("Malformed chain is explicitly rejected"), Invalid.bFinite);
 	TestTrue(TEXT("Invalid input does not partially modify the chain"), Degenerate == BeforeInvalid);
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiIKEmbeddedAttachmentTest,
+	"KawaiiPhysicsBaker.IKCorrection.EmbeddedAttachment",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiIKEmbeddedAttachmentTest::RunTest(const FString&) {
+	using namespace KawaiiPhysicsIKCorrection;
+	const TArray<FVector> Input{{0, 0, 1}, {0, 0, -10}, {0, 0, -20}};
+	const TArray<double> Lengths{11., 10.};
+	const TArray<FCapsule> Capsules{{FVector::ZeroVector, FVector::ZeroVector, 2.}};
+	TArray<FVector> Points = Input;
+	const auto Result = SolveChain(Points, Lengths, Input, Capsules, 32, 0.);
+	TestTrue(TEXT("Embedded root is still pinned"), Points[0].Equals(Input[0]));
+	TestTrue(TEXT("An impossible first-edge contact cannot rotate a clear strand"), Points[1].Equals(Input[1], 1.e-6) && Points[2].Equals(Input[2], 1.e-6));
+	TestTrue(TEXT("Unavoidable attachment overlap remains visible in diagnostics"), Result.MaxPenetration >= 1.);
+	// The exemption is only for the first edge. A later edge returning through the
+	// capsule must still be moved, even though both of its endpoints start outside.
+	const TArray<FVector> Returning{{0, 0, 1}, {0, 0, -10}, {0, 0, 10}};
+	Points = Returning;
+	SolveChain(Points, {11., 20.}, Returning, Capsules, 32, 0.);
+	TestFalse(TEXT("Later crossing segment still collides"), Points[2].Equals(Returning[2], 1.e-4));
 	return true;
 }
 

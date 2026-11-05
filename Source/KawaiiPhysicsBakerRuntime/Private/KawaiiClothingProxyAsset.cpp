@@ -51,14 +51,15 @@ namespace KawaiiClothingProxy {
 			AppendString(Shape.Id.ToString().ToLower());
 			AppendString(Shape.StartBone.ToString().ToLower());
 			AppendString(Shape.EndBone.ToString().ToLower());
-			Canonical += FString::Printf(TEXT("%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;%.17g;"),
-										 Shape.StartOffset.X,
-										 Shape.StartOffset.Y,
-										 Shape.StartOffset.Z,
-										 Shape.EndOffset.X,
-										 Shape.EndOffset.Y,
-										 Shape.EndOffset.Z,
-										 static_cast<double>(Shape.Radius)
+			Canonical += FString::Printf(
+				TEXT("%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;%.17g;"),
+				Shape.StartOffset.X,
+				Shape.StartOffset.Y,
+				Shape.StartOffset.Z,
+				Shape.EndOffset.X,
+				Shape.EndOffset.Y,
+				Shape.EndOffset.Z,
+				static_cast<double>(Shape.Radius)
 			);
 		}
 		FTCHARToUTF8 UTF8(*Canonical);
@@ -78,20 +79,21 @@ namespace KawaiiClothingProxy {
 			const FTransform& Pose = Skeleton.GetRawRefBonePose()[Bone];
 			const FVector P = Pose.GetTranslation(), S = Pose.GetScale3D();
 			const FQuat Q = Pose.GetRotation();
-			Canonical += FString::Printf(TEXT("%d:%s;%d;%.17g,%.17g,%.17g;%.17g,%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;"),
-										 Name.Len(),
-										 *Name,
-										 Skeleton.GetParentIndex(Bone),
-										 P.X,
-										 P.Y,
-										 P.Z,
-										 Q.X,
-										 Q.Y,
-										 Q.Z,
-										 Q.W,
-										 S.X,
-										 S.Y,
-										 S.Z
+			Canonical += FString::Printf(
+				TEXT("%d:%s;%d;%.17g,%.17g,%.17g;%.17g,%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;"),
+				Name.Len(),
+				*Name,
+				Skeleton.GetParentIndex(Bone),
+				P.X,
+				P.Y,
+				P.Z,
+				Q.X,
+				Q.Y,
+				Q.Z,
+				Q.W,
+				S.X,
+				S.Y,
+				S.Z
 			);
 		}
 		FTCHARToUTF8 UTF8(*Canonical);
