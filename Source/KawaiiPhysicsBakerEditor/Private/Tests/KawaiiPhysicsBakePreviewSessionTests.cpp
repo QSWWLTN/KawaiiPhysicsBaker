@@ -303,4 +303,40 @@ bool FKawaiiPreviewProxySessionTest::RunTest(const FString&) {
 	return true;
 }
 
+IMPLEMENT_COMPLEX_AUTOMATION_TEST(FKawaiiFastMotionPreviewSessionsTest,
+	"KawaiiPhysicsBaker.PreviewProxy.FastMotionSessions",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+void FKawaiiFastMotionPreviewSessionsTest::GetTests(TArray<FString>& Names, TArray<FString>& Commands) const {
+	Names = {TEXT("Landing"), TEXT("Attack")};
+	Commands = {TEXT("/Game/Assets/Anime/Lime/FreeWalkJog/Jump/Land_3h"), TEXT("/Game/Assets/Anime/Lime/Combat/S_Attack3")};
+}
+
+bool FKawaiiFastMotionPreviewSessionsTest::RunTest(const FString& AnimationPath) {
+	if (!FPackageName::DoesPackageExist(TEXT("/Game/KawaiiBakes/ABP_KawaiiBake")) || !FPackageName::DoesPackageExist(AnimationPath)) {
+		AddWarning(TEXT("Optional project fast-motion fixture unavailable"));
+		return true;
+	}
+	UAnimBlueprint* Source = LoadObject<UAnimBlueprint>(nullptr, TEXT("/Game/KawaiiBakes/ABP_KawaiiBake"));
+	UPackage* Package = CreatePackage(*FString::Printf(TEXT("/Temp/KawaiiFastMotion_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+	Package->SetFlags(RF_Transient);
+	UAnimBlueprint* Copy = DuplicateObject<UAnimBlueprint>(Source, Package, TEXT("ABP_FastMotionTest"));
+	auto* Settings = KawaiiPhysicsBake::GetSettings(Copy);
+	if (!TestTrue(TEXT("Project fixture has a garment definition"), Settings && !Settings->Parts.IsEmpty() && Settings->Parts[0].ProxyDefinition)) { return false; }
+	Settings->SourceAnimation = LoadObject<UAnimSequence>(nullptr, *AnimationPath);
+	Settings->bEnableClothingCollision = false;
+	Settings->ClothingCollisionProfile = nullptr;
+	Settings->bPreviewClothingProxyCollision = true;
+	auto* Profile = LoadObject<UKawaiiPhysicsIKCorrectionProfile>(nullptr, TEXT("/Game/BP/AnimeBP/Lime/DA_AnimBP_Lime_IKCorrection"));
+	if (!TestNotNull(TEXT("Runtime correction profile"), Profile)) { return false; }
+	Settings->PreviewCorrectionProfile = DuplicateObject<UKawaiiPhysicsIKCorrectionProfile>(Profile, Package, TEXT("FastMotionProfile"));
+	Settings->PreviewCorrectionProfile->SmoothingTime = 0.f;
+	Settings->CollisionSourcePart = Settings->Parts[0].Name;
+	Settings->Parts[0].ProxyMotionSet = nullptr;
+	Settings->WarmUpFrames = 0;
+	Settings->SampleRate = 60;
+	Settings->OutputPrefix = TEXT("FastMotionTestUnused");
+	ADD_LATENT_AUTOMATION_COMMAND(FPreviewProxySessionCommand(this, Copy));
+	return true;
+}
 #endif

@@ -14,6 +14,10 @@ namespace KawaiiPhysicsIKProfileGenerator {
 		FName RootBone;
 		TArray<FName> ExcludeBones;
 		float CollisionRadius = 0.f;
+		FRuntimeFloatCurve RadiusCurve;
+		float DummyLength = 0.f;
+		float LimitAngle = 0.f;
+		FRuntimeFloatCurve LimitAngleCurve;
 	};
 
 	/** Hierarchy-only decomposition. Parents[i] < i; INDEX_NONE marks a skeleton root.

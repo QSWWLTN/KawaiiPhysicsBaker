@@ -56,7 +56,7 @@ namespace KawaiiProxySnapshotTests {
 			return false;
 		}
 		for (int32 Index = 0; Index < A.Num(); ++Index) {
-			if (A[Index].Id != B[Index].Id || !A[Index].Start.Equals(B[Index].Start, 1.e-5) || !A[Index].End.Equals(B[Index].End, 1.e-5)
+			if (!A[Index].BoxExtent.Equals(B[Index].BoxExtent, 1.e-5) || !A[Index].BoxRotation.Equals(B[Index].BoxRotation, 1.e-5) || A[Index].Id != B[Index].Id || !A[Index].Start.Equals(B[Index].Start, 1.e-5) || !A[Index].End.Equals(B[Index].End, 1.e-5)
 				|| !FMath::IsNearlyEqual(A[Index].Radius, B[Index].Radius, 1.e-5f) || A[Index].IgnoredTargetRootBones != B[Index].IgnoredTargetRootBones)
 			{
 				return false;
@@ -76,6 +76,49 @@ bool FKawaiiProxySnapshotParityTest::RunTest(const FString&) {
 	using namespace KawaiiClothingProxy;
 	using namespace KawaiiProxySnapshotTests;
 	TStrongObjectPtr<UKawaiiClothingProxyMotion> A(MakeMotion());
+	TStrongObjectPtr<UKawaiiClothingProxyMotion> B(DuplicateObject<UKawaiiClothingProxyMotion>(A.Get(), GetTransientPackage()));
+	for (FTransform& Key : B->LocalKeys) {
+		Key.SetRotation(Key.GetRotation() * -1.0);
+	}
+	B->LocalKeys[1].SetTranslation(FVector(8, 3, 2));
+	B->LocalKeys[3].SetTranslation(FVector(7, 5, 1));
+	A->RelativeTransform = B->RelativeTransform = FTransform(FVector(100, 0, 0));
+	FSnapshot SA, SB;
+	FString Error;
+	if (!TestTrue(TEXT("First complete asset snapshots"), BuildSnapshot(*A.Get(), SA, Error))
+		|| !TestTrue(TEXT("Second complete asset snapshots"), BuildSnapshot(*B.Get(), SB, Error)))
+	{
+		AddError(Error);
+		return false;
+	}
+	const FTransform ToTarget(FQuat(FVector::YAxisVector, 0.3), FVector(5, 2, 0), FVector(2, 1, 3));
+	for (float Time : {-1.f, 0.f, 0.007f, 0.025f, 0.03f, 2.f}) {
+		TArray<FKawaiiClothingProxyCapsule> Expected, Actual;
+		const float OtherTime = Time + 0.002f;
+		TestTrue(
+			TEXT("Original game-thread sampler succeeds"),
+			SampleBlended({AssetSample(A.Get(), Time, 2.f), AssetSample(B.Get(), OtherTime, 3.f)}, ToTarget, Expected, Error)
+		);
+		TestTrue(TEXT("Snapshot sampler succeeds"), SampleSnapshots({{&SA, Time, 2.f}, {&SB, OtherTime, 3.f}}, ToTarget, Actual, Error));
+		TestTrue(FString::Printf(TEXT("Snapshot agrees with original sampler at %.4f seconds"), Time), EqualCapsules(Expected, Actual));
+	}
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiProxyBoxSnapshotTest,
+	"KawaiiPhysicsBaker.ClothingProxy.Snapshot.BoxSamplerParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiProxyBoxSnapshotTest::RunTest(const FString&) {
+	using namespace KawaiiClothingProxy;
+	using namespace KawaiiProxySnapshotTests;
+	TStrongObjectPtr<UKawaiiClothingProxyMotion> A(MakeMotion());
+	auto& Box = A->Definition->Shapes[0];
+	Box.bBox = true; Box.BoxExtent = FVector(2, 3, 4); Box.BoxRotation = FRotator(20, 35, 15);
+	Box.EndBone = TEXT("UnusedBoxEndpoint");
+	A->Shapes = A->Definition->Shapes; A->DefinitionSignature = A->Definition->ComputeSignature();
 	TStrongObjectPtr<UKawaiiClothingProxyMotion> B(DuplicateObject<UKawaiiClothingProxyMotion>(A.Get(), GetTransientPackage()));
 	for (FTransform& Key : B->LocalKeys) {
 		Key.SetRotation(Key.GetRotation() * -1.0);

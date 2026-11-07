@@ -78,7 +78,7 @@ bool UKawaiiClothingProxyMotion::ValidateHeader(FString& Error) const {
 		Names.Add(BoneNames[Bone]);
 	}
 	for (const FKawaiiClothingProxyShape& Shape : Shapes) {
-		if (!Names.Contains(Shape.StartBone) || (!Shape.EndBone.IsNone() && !Names.Contains(Shape.EndBone))) {
+		if (!Names.Contains(Shape.StartBone) || (!Shape.bBox && !Shape.EndBone.IsNone() && !Names.Contains(Shape.EndBone))) {
 			Error = FString::Printf(TEXT("代理 %s 的端点骨骼不在运动层级中。"), *Shape.Id.ToString());
 			return false;
 		}
@@ -277,7 +277,7 @@ namespace KawaiiClothingProxy {
 			Capsules.Reserve(First->Shapes.Num());
 			for (const FKawaiiClothingProxyShape& Shape : First->Shapes) {
 				const int32 Start = First->BoneNames.IndexOfByKey(Shape.StartBone);
-				const int32 End = Shape.EndBone.IsNone() ? Start : First->BoneNames.IndexOfByKey(Shape.EndBone);
+				const int32 End = Shape.bBox || Shape.EndBone.IsNone() ? Start : First->BoneNames.IndexOfByKey(Shape.EndBone);
 				// ValidateHeader already checked indices. Keep this explicit for all-or-nothing output.
 				if (!ComponentPose.IsValidIndex(Start) || !ComponentPose.IsValidIndex(End)) {
 					Error = TEXT("代理端点骨骼缺失。");
@@ -291,6 +291,11 @@ namespace KawaiiClothingProxy {
 				// Conservative radius for positive non-uniform scale, including both endpoint bindings.
 				Capsule.Radius = Shape.Radius * FMath::Max(ComponentPose[Start].GetMaximumAxisScale(), ComponentPose[End].GetMaximumAxisScale())
 					* ProxyToTarget.GetMaximumAxisScale();
+				if (Shape.bBox) {
+					Capsule.BoxRotation = (ProxyToTarget.GetRotation() * ComponentPose[Start].GetRotation() * Shape.BoxRotation.Quaternion()).GetNormalized();
+					Capsule.BoxExtent = Shape.BoxExtent * ComponentPose[Start].GetMaximumAxisScale() * ProxyToTarget.GetMaximumAxisScale();
+					Capsule.End = Capsule.Start;
+				}
 				if (Capsule.Start.ContainsNaN() || Capsule.End.ContainsNaN() || !FMath::IsFinite(Capsule.Radius) || Capsule.Radius <= 0.f) {
 					Error = TEXT("代理坐标转换产生了无效几何。");
 					return false;

@@ -9,6 +9,7 @@ class UEdGraphNode;
 class UBlueprint;
 class UAnimBlueprint;
 class UKawaiiPhysicsIKCorrectionProfile;
+class USkeletalMesh;
 
 /** Small editor scripting bridge for the native cached-pose reference. */
 UCLASS()
@@ -17,6 +18,10 @@ class UKawaiiPhysicsIKEditorLibrary : public UBlueprintFunctionLibrary
 	GENERATED_BODY()
 
 public:
+	/** Refresh only measured skin envelopes, retaining chain topology, authored radii, colliders and timing settings. Caller saves the profile. */
+	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Editor")
+		static bool RefreshIKMeshEnvelopes(UKawaiiPhysicsIKCorrectionProfile* Profile, USkeletalMesh* Mesh, FString& Report);
+
 	/** Bind a Use Cached Pose to a Save Cached Pose in the same animation graph. */
 	UFUNCTION(BlueprintCallable, Category = "Kawaii Physics|Editor")
 		static bool BindUseCachedPose(UEdGraphNode* UseNode, UEdGraphNode* SaveNode);

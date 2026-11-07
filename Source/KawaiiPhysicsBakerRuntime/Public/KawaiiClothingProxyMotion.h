@@ -106,6 +106,11 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FKawaiiClothingProxyCapsule
 	/** Per-garment rules copied on the game thread; consumers must filter by their target chain root. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Collision")
 		TArray<FName> IgnoredTargetRootBones;
+	/** Nonzero extents select a box centered at Start; the legacy struct name is retained for assets/pins. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Collision")
+		FVector BoxExtent = FVector::ZeroVector;
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Collision")
+		FQuat BoxRotation = FQuat::Identity;
 };
 
 namespace KawaiiClothingProxy {

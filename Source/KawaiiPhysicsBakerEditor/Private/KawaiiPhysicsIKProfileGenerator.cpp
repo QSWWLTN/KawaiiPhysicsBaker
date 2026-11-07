@@ -1,4 +1,5 @@
 #include "KawaiiPhysicsIKProfileGenerator.h"
+#include "KawaiiPhysicsIKMeshEnvelope.h"
 
 #include "AnimGraphNode_KawaiiPhysics.h"
 #include "Animation/AnimBlueprint.h"
@@ -12,6 +13,7 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "KawaiiPhysicsLimitsDataAsset.h"
+#include "KawaiiPhysicsBoneConstraintsDataAsset.h"
 #include "Misc/MessageDialog.h"
 #include "Misc/PackageName.h"
 #include "Modules/ModuleManager.h"
@@ -41,6 +43,9 @@ namespace KawaiiPhysicsIKProfileGenerator {
 		}
 
 		bool SameCapsule(const FKawaiiPhysicsIKCorrectionCapsule& A, const FKawaiiPhysicsIKCorrectionCapsule& B) {
+			if (A.bBox != B.bBox) { return false; }
+			if (A.bBox) { return A.StartBone.BoneName == B.StartBone.BoneName && A.StartOffset.Equals(B.StartOffset, .001)
+				&& A.BoxExtent.Equals(B.BoxExtent, .001) && A.BoxRotation.Equals(B.BoxRotation, .001); }
 			if (!FMath::IsNearlyEqual(A.Radius, B.Radius, 1.e-3f)) {
 				return false;
 			}
@@ -51,17 +56,6 @@ namespace KawaiiPhysicsIKProfileGenerator {
 			return bForward || bReversed;
 		}
 
-		/** KawaiiPhysics scales Radius along the chain by RadiusCurveData; keep the largest value so no segment is under-sized. */
-		float RadiusScale(const FRuntimeFloatCurve& Curve) {
-			const FRichCurve* Rich = Curve.GetRichCurveConst();
-			if (!Rich || Rich->GetNumKeys() == 0) {
-				return 1.f;
-			}
-			float Min = 0.f;
-			float Max = 0.f;
-			Rich->GetValueRange(Min, Max);
-			return FMath::IsFinite(Max) && Max > 0.f ? Max : 1.f;
-		}
 
 		bool SaveAsset(UObject* Asset) {
 			UPackage* Package = Asset->GetOutermost();
@@ -287,6 +281,15 @@ namespace KawaiiPhysicsIKProfileGenerator {
 				}
 			}
 			Out.CollisionRadius = ChainRadius;
+			for (const auto& SourceRoot : Roots) {
+				const int32* R = IndexOf.Find(SourceRoot.RootBone);
+				if (R && IsInSubtree(Chain.Tip, *R, Parents) && FMath::IsNearlyEqual(SourceRoot.CollisionRadius, ChainRadius)) {
+					Out.RadiusCurve = SourceRoot.RadiusCurve;
+					Out.LimitAngle = SourceRoot.LimitAngle;
+					Out.LimitAngleCurve = SourceRoot.LimitAngleCurve;
+					break;
+				}
+			}
 		}
 		if (!BranchBones.IsEmpty()) {
 			OutNotes.Add(FString::Printf(TEXT("分叉骨骼 %s 本身保持输入姿势，其下每个分支各生成一条骨链。"), *FString::Join(BranchBones, TEXT("、"))));
@@ -339,7 +342,7 @@ namespace KawaiiPhysicsIKProfileGenerator {
 		TArray<FSimulatedRoot> Roots;
 		for (const UAnimGraphNode_KawaiiPhysics* GraphNode : PhysicsNodes) {
 			const FAnimNode_KawaiiPhysics& Node = GraphNode->Node;
-			const float NodeRadius = FMath::Max(0.f, Node.PhysicsSettings.Radius * RadiusScale(Node.RadiusCurveData));
+			const float NodeRadius = FMath::Max(0.f, Node.PhysicsSettings.Radius);
 			const auto AddRoot = [&](FName RootBone, const TArray<FBoneReference>& Excludes) {
 				if (RootBone.IsNone()) {
 					return;
@@ -350,6 +353,10 @@ namespace KawaiiPhysicsIKProfileGenerator {
 					Root.ExcludeBones.Add(Exclude.BoneName);
 				}
 				Root.CollisionRadius = NodeRadius;
+				Root.DummyLength = Node.DummyBoneLength;
+				if (const auto* Rich = Node.RadiusCurveData.GetRichCurveConst()) { Root.RadiusCurve.EditorCurveData = *Rich; }
+				Root.LimitAngle = Node.PhysicsSettings.LimitAngle;
+				if (const auto* Rich = Node.LimitAngleCurveData.GetRichCurveConst()) { Root.LimitAngleCurve.EditorCurveData = *Rich; }
 			};
 			AddRoot(Node.RootBone.BoneName, Node.ExcludeBones);
 			for (const FKawaiiPhysicsRootBoneSetting& Extra : Node.AdditionalRootBones) {
@@ -393,6 +400,72 @@ namespace KawaiiPhysicsIKProfileGenerator {
 			Lines.Append(Notes);
 			return Fail(TEXT("KawaiiPhysics 骨骼中没有至少包含两节骨骼的单路径骨链。"));
 		}
+		// Sample the source curve at real bones using the original root's longest branch.
+		// A split branch must not restart the original curve at zero, nor use its maximum everywhere.
+		TArray<float> BoneRadius; BoneRadius.Init(0.f, Ref.GetNum());
+		TArray<float> BoneAngle; BoneAngle.Init(0.f, Ref.GetNum());
+		TArray<bool> Curved; Curved.Init(false, Ref.GetNum());
+		for (const auto& Root : Roots) {
+			const int32 Start = Ref.FindBoneIndex(Root.RootBone);
+			if (Start == INDEX_NONE) { continue; }
+			TArray<double> Distance; Distance.Init(-1., Ref.GetNum()); Distance[Start] = 0.;
+			double Longest = 0.;
+			for (int32 Bone = Start; Bone < Ref.GetNum(); ++Bone) {
+				if (Root.ExcludeBones.Contains(Ref.GetBoneName(Bone))) { Distance[Bone] = -1.; continue; }
+				if (Bone != Start && Parents[Bone] >= 0 && Distance[Parents[Bone]] >= 0.) {
+					Distance[Bone] = Distance[Parents[Bone]] + Ref.GetRefBonePose()[Bone].GetTranslation().Size();
+				}
+				Longest = FMath::Max(Longest, Distance[Bone]);
+			}
+			Longest += FMath::Max(0.f, Root.DummyLength);
+			const auto* Curve = Root.RadiusCurve.GetRichCurveConst();
+			if (!FMath::IsFinite(Root.LimitAngle) || Root.LimitAngle < 0.f) { return Fail(TEXT("KawaiiPhysics 角度上限无效。")); }
+			const auto* AngleCurve = Root.LimitAngleCurve.GetRichCurveConst();
+			for (int32 Bone = Start; Bone < Ref.GetNum(); ++Bone) {
+				if (Distance[Bone] < 0.) { continue; }
+				const float Scale = Curve->Eval(Longest > UE_SMALL_NUMBER ? Distance[Bone] / Longest : 0., 1.f);
+				if (!FMath::IsFinite(Scale) || Scale < 0.f) { return Fail(TEXT("KawaiiPhysics 半径曲线包含无效值。")); }
+				BoneRadius[Bone] = FMath::Max(BoneRadius[Bone], Root.CollisionRadius * Scale);
+				Curved[Bone] = Curved[Bone] || Curve->GetNumKeys() > 0;
+				const float AngleScale = AngleCurve->Eval(Longest > UE_SMALL_NUMBER ? Distance[Bone] / Longest : 0., 1.f);
+				if (!FMath::IsFinite(AngleScale) || AngleScale < 0.f) { return Fail(TEXT("KawaiiPhysics 角度曲线包含无效值。")); }
+				const float Limit = FMath::Clamp(Root.LimitAngle * AngleScale, 0.f, 180.f);
+				// Zero means unlimited. Overlapping source nodes retain the tighter positive limit.
+				if (Limit > 0.f) { BoneAngle[Bone] = BoneAngle[Bone] > 0.f ? FMath::Min(BoneAngle[Bone], Limit) : Limit; }
+			}
+		}
+		for (auto& Chain : Chains) {
+			const int32 Root = Ref.FindBoneIndex(Chain.RootBone.BoneName), Tip = Ref.FindBoneIndex(Chain.TipBone.BoneName);
+			TArray<int32> Path; double Length = 0.; bool HasCurve = false;
+			for (int32 B = Tip; B != INDEX_NONE; B = Parents[B]) { Path.Insert(B, 0); HasCurve |= Curved[B]; if (B == Root) { break; } Length += Ref.GetRefBonePose()[B].GetTranslation().Size(); }
+			Chain.RadiusCurve.EditorCurveData.Reset();
+			Chain.LimitAngle = 0.f; Chain.LimitAngleCurve.EditorCurveData.Reset(); Chain.LimitAngleCurve.ExternalCurve = nullptr;
+			for (int32 B : Path) { Chain.LimitAngle = FMath::Max(Chain.LimitAngle, BoneAngle[B]); }
+			if (Chain.LimitAngle > 0.f) {
+				double AngleAlong = 0.;
+				for (int32 I = 0; I < Path.Num(); ++I) {
+					if (I > 0) { AngleAlong += Ref.GetRefBonePose()[Path[I]].GetTranslation().Size(); }
+					const auto Key = Chain.LimitAngleCurve.EditorCurveData.UpdateOrAddKey(Length > UE_SMALL_NUMBER ? AngleAlong / Length : 0., BoneAngle[Path[I]] / Chain.LimitAngle);
+					Chain.LimitAngleCurve.EditorCurveData.SetKeyInterpMode(Key, RCIM_Linear);
+				}
+			}
+			if (!HasCurve || Chain.CollisionRadius <= UE_SMALL_NUMBER) { continue; }
+			double Along = 0.;
+			for (int32 I = 0; I < Path.Num(); ++I) {
+				if (I > 0) { Along += Ref.GetRefBonePose()[Path[I]].GetTranslation().Size(); }
+				const auto Key = Chain.RadiusCurve.EditorCurveData.UpdateOrAddKey(Length > UE_SMALL_NUMBER ? Along / Length : 0., BoneRadius[Path[I]] / Chain.CollisionRadius);
+				Chain.RadiusCurve.EditorCurveData.SetKeyInterpMode(Key, RCIM_Linear);
+			}
+		}
+		USkeletalMesh* EnvelopeMesh = Blueprint->GetPreviewMesh();
+		if (!EnvelopeMesh) { EnvelopeMesh = Skeleton->GetPreviewMesh(); }
+		if (EnvelopeMesh) {
+			TArray<float> Radii;
+			if (KawaiiPhysicsIKMeshEnvelope::Measure(*EnvelopeMesh, Chains, Radii, Error)) {
+				for (int32 C = 0; C < Chains.Num(); ++C) { Chains[C].MeshEnvelopeRadius = Radii[C]; }
+				Notes.Add(FString::Printf(TEXT("已从 %s 的 LOD 0 蒙皮顶点测量包络供诊断；整链包络为可能撑开发型的实验功能，默认关闭。"), *EnvelopeMesh->GetName()));
+			} else { Notes.Add(TEXT("未生成网格包络：") + Error); EnvelopeMesh = nullptr; }
+		} else { Notes.Add(TEXT("没有预览网格，未生成蒙皮包络。")); }
 
 		TArray<uint8> InsideChain;
 		InsideChain.Init(0, BoneNames.Num());
@@ -405,19 +478,44 @@ namespace KawaiiPhysicsIKProfileGenerator {
 			}
 		}
 
+		TArray<FKawaiiPhysicsIKContactBridge> Bridges;
+		TMap<FName, int32> ChainOf;
+		for (int32 C = 0; C < Chains.Num(); ++C) {
+			const int32 Root = Ref.FindBoneIndex(Chains[C].RootBone.BoneName);
+			for (int32 B = Ref.FindBoneIndex(Chains[C].TipBone.BoneName); B != INDEX_NONE; B = Parents[B]) {
+				ChainOf.Add(Ref.GetBoneName(B), C); if (B == Root) { break; }
+			}
+		}
+		for (const auto* GraphNode : PhysicsNodes) {
+			const auto& Node = GraphNode->Node;
+			if (Node.BoneConstraintSubdivisionCount <= 0 || Node.BoneConstraintSubdivisionFeedbackScale <= 0.f) { continue; }
+			auto Constraints = Node.BoneConstraints;
+			if (Node.BoneConstraintsDataAsset) { Constraints.Append(Node.BoneConstraintsDataAsset->GenerateBoneConstraints()); }
+			for (const auto& Constraint : Constraints) {
+				const FName A = Constraint.Bone1.BoneName, B = Constraint.Bone2.BoneName;
+				if (Constraint.bExcludeFromSubdivision || !ChainOf.Contains(A) || !ChainOf.Contains(B) || ChainOf[A] == ChainOf[B]) { continue; }
+				if (Bridges.ContainsByPredicate([&](const auto& Existing) { return (Existing.BoneA.BoneName == A && Existing.BoneB.BoneName == B)
+					|| (Existing.BoneA.BoneName == B && Existing.BoneB.BoneName == A); })) { continue; }
+				if (Bridges.Num() >= 128) { return Fail(TEXT("横向接触超过 128 条上限。")); }
+				auto& Bridge = Bridges.AddDefaulted_GetRef(); Bridge.BoneA.BoneName = A; Bridge.BoneB.BoneName = B;
+				Bridge.Samples = FMath::Clamp(Node.BoneConstraintSubdivisionCount, 1, 10);
+				Bridge.Feedback = FMath::Clamp(Node.BoneConstraintSubdivisionFeedbackScale, 0.f, 2.f);
+			}
+		}
+		Notes.Add(FString::Printf(TEXT("导入 %d 条横向虚拟接触，仅反馈碰撞位移，不重复执行已烘焙的重力、风力或 XPBD 距离弹簧。"), Bridges.Num()));
 		TArray<FKawaiiPhysicsIKCorrectionCapsule> Capsules;
 		int32 Duplicates = 0, SkippedInside = 0, SkippedMissing = 0, SkippedInner = 0, SkippedInvalid = 0, Truncated = 0;
-		int32 BoxOrPlanar = 0;
+		int32 Planar = 0;
 		TSet<FString> PhysicsAssets;
 		if (Options.bImportBodyCapsules) {
-			const auto AddShape = [&](FName Bone, const FVector& Center, const FRotator& Rotation, float ShapeRadius, float Length) {
+			const auto AddShape = [&](FName Bone, const FVector& Center, const FRotator& Rotation, float ShapeRadius, float Length, const FVector& BoxExtent = FVector(0., 0., 0.)) {
 				const int32 Index = Ref.FindBoneIndex(Bone);
 				if (Index == INDEX_NONE) {
 					++SkippedMissing;
 					return;
 				}
 				if (!FMath::IsFinite(ShapeRadius) || ShapeRadius <= 0.f || !FMath::IsFinite(Length) || Length < 0.f || Center.ContainsNaN()
-					|| Rotation.ContainsNaN())
+					|| Rotation.ContainsNaN() || BoxExtent.ContainsNaN() || (!BoxExtent.IsZero() && BoxExtent.GetMin() <= 0.))
 				{
 					++SkippedInvalid;
 					return;
@@ -427,7 +525,8 @@ namespace KawaiiPhysicsIKProfileGenerator {
 					++SkippedInside;
 					return;
 				}
-				const FKawaiiPhysicsIKCorrectionCapsule Capsule = MakeBoneCapsule(Bone, Center, Rotation, ShapeRadius, Length);
+				FKawaiiPhysicsIKCorrectionCapsule Capsule = MakeBoneCapsule(Bone, Center, Rotation, ShapeRadius, Length);
+				if (!BoxExtent.IsZero()) { Capsule.bBox = true; Capsule.BoxExtent = BoxExtent; Capsule.BoxRotation = Rotation; }
 				if (Capsules.ContainsByPredicate([&](const FKawaiiPhysicsIKCorrectionCapsule& Existing) { return SameCapsule(Existing, Capsule); })) {
 					++Duplicates;
 					return;
@@ -438,7 +537,8 @@ namespace KawaiiPhysicsIKProfileGenerator {
 				}
 				Capsules.Add(Capsule);
 			};
-			const auto AddLimits = [&](const TArray<FCapsuleLimit>& CapsuleLimits, const TArray<FSphericalLimit>& SphericalLimits) {
+			const auto AddLimits = [&](const TArray<FCapsuleLimit>& CapsuleLimits, const TArray<FSphericalLimit>& SphericalLimits, const TArray<FBoxLimit>& BoxLimits) {
+				for (const auto& Limit : BoxLimits) { AddShape(Limit.DrivingBone.BoneName, Limit.OffsetLocation, Limit.OffsetRotation, 1.f, 0.f, Limit.Extent); }
 				for (const FCapsuleLimit& Limit : CapsuleLimits) {
 					AddShape(Limit.DrivingBone.BoneName, Limit.OffsetLocation, Limit.OffsetRotation, Limit.Radius, Limit.Length);
 				}
@@ -452,11 +552,11 @@ namespace KawaiiPhysicsIKProfileGenerator {
 			};
 			for (const UAnimGraphNode_KawaiiPhysics* GraphNode : PhysicsNodes) {
 				const FAnimNode_KawaiiPhysics& Node = GraphNode->Node;
-				AddLimits(Node.CapsuleLimits, Node.SphericalLimits);
-				BoxOrPlanar += Node.BoxLimits.Num() + Node.PlanarLimits.Num();
+				AddLimits(Node.CapsuleLimits, Node.SphericalLimits, Node.BoxLimits);
+				Planar += Node.PlanarLimits.Num();
 				if (const UKawaiiPhysicsLimitsDataAsset* Limits = Node.LimitsDataAsset) {
-					AddLimits(Limits->CapsuleLimits, Limits->SphericalLimits);
-					BoxOrPlanar += Limits->BoxLimits.Num() + Limits->PlanarLimits.Num();
+					AddLimits(Limits->CapsuleLimits, Limits->SphericalLimits, Limits->BoxLimits);
+					Planar += Limits->PlanarLimits.Num();
 				}
 				if (Node.PhysicsAssetForLimits) {
 					PhysicsAssets.Add(Node.PhysicsAssetForLimits->GetPathName());
@@ -504,7 +604,7 @@ namespace KawaiiPhysicsIKProfileGenerator {
 			Lines.Add(FString::Printf(TEXT("· %d 个节点的代理动作集合由连线提供，无法静态读取其忽略规则。"), LinkedSets));
 		}
 		if (Options.bImportBodyCapsules) {
-			Lines.Add(FString::Printf(TEXT("身体碰撞体 %d 个（来自 KawaiiPhysics 外侧球体与胶囊限制；去重 %d 个）。"), Capsules.Num(), Duplicates));
+			Lines.Add(FString::Printf(TEXT("身体碰撞体 %d 个（来自 KawaiiPhysics 外侧球体、胶囊与盒体限制；去重 %d 个）。"), Capsules.Num(), Duplicates));
 			TArray<FString> Skips;
 			if (SkippedInside > 0) {
 				Skips.Add(FString::Printf(TEXT("绑定在被修正骨链内 %d 个"), SkippedInside));
@@ -521,8 +621,8 @@ namespace KawaiiPhysicsIKProfileGenerator {
 			if (Truncated > 0) {
 				Skips.Add(FString::Printf(TEXT("超过 %d 个上限 %d 个"), MaxCapsules, Truncated));
 			}
-			if (BoxOrPlanar > 0) {
-				Skips.Add(FString::Printf(TEXT("Box/Planar 限制 %d 个（无对应形状）"), BoxOrPlanar));
+			if (Planar > 0) {
+				Skips.Add(FString::Printf(TEXT("Planar 限制 %d 个（无对应形状）"), Planar));
 			}
 			if (!PhysicsAssets.IsEmpty()) {
 				Skips.Add(FString::Printf(TEXT("物理资产限制 %d 个（未导入）"), PhysicsAssets.Num()));
@@ -565,13 +665,21 @@ namespace KawaiiPhysicsIKProfileGenerator {
 			Profile->SetFlags(RF_Transactional);
 			Profile->Modify();
 		}
+		// Bend preservation has no native-node equivalent; retain explicitly tuned values on refresh.
+		for (auto& Chain : Chains) {
+			if (const auto* Existing = Profile->Chains.FindByPredicate([&](const auto& C) { return C.RootBone.BoneName == Chain.RootBone.BoneName && C.TipBone.BoneName == Chain.TipBone.BoneName; })) {
+				Chain.MaxBendChange = Existing->MaxBendChange;
+			}
+		}
 		Profile->Chains = MoveTemp(Chains);
+		Profile->ContactBridges = MoveTemp(Bridges);
+		Profile->MeshEnvelopeSource = EnvelopeMesh;
 		Profile->Capsules = MoveTemp(Capsules);
 		// Imported capsules are bound to this blueprint's skeleton, not to an attach parent.
 		Profile->bUseAttachedParentForCollision = false;
 		Profile->PostEditChange();
 		Profile->MarkPackageDirty();
-		Lines.Insert(FString::Printf(TEXT("%s IK 修正配置：%s"), bCreated ? TEXT("已新建") : TEXT("已重新生成（覆盖原有骨链与碰撞体）"), *ObjectPath), 0);
+		Lines.Insert(FString::Printf(TEXT("%s IK 修正配置：%s"), bCreated ? TEXT("已新建") : TEXT("已重新生成（覆盖原有骨链、碰撞体与横向接触）"), *ObjectPath), 0);
 
 		const bool bBlueprintWasDirty = Blueprint->GetOutermost()->IsDirty();
 		int32 Assigned = 0;
@@ -627,7 +735,7 @@ namespace KawaiiPhysicsIKProfileGenerator {
 				}
 			}
 		}
-		Lines.Add(TEXT("提示：重新生成会覆盖配置中的骨链和碰撞体；低 LOD 缺少骨链骨骼时运行时会整体回退为输入姿势。"));
+		Lines.Add(TEXT("提示：重新生成会覆盖配置中的骨链、碰撞体和横向接触；低 LOD 缺少骨链骨骼时运行时会整体回退为输入姿势。"));
 		Finish();
 		return Profile;
 	}

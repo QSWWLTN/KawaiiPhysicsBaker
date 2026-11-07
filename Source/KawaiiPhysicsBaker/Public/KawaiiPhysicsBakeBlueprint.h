@@ -72,8 +72,11 @@ public:
 	UPROPERTY(EditAnywhere, Category = "源动画", meta = (DisplayName = "主骨骼网格体", ToolTip = "主角色的骨骼网格体，其部件名称为 Main。"))
 		TObjectPtr<USkeletalMesh> MainMesh = nullptr;
 
-	UPROPERTY(EditAnywhere, Category = "源动画", meta = (DisplayName = "源动画", ToolTip = "与主骨骼网格体使用相同骨架的非叠加动画。"))
+	UPROPERTY(EditAnywhere, Category = "源动画", meta = (DisplayName = "源动画", EditCondition = "ExistingBakedBodyAnimation == nullptr", ToolTip = "与主骨骼网格体使用相同骨架的非叠加动画。"))
 		TObjectPtr<UAnimSequence> SourceAnimation = nullptr;
+
+	UPROPERTY(EditAnywhere, Category = "源动画", meta = (DisplayName = "已烘焙人物动画", ToolTip = "追加烘焙衣物时选择。Main 直接播放此序列，衣物按它的时间轴烘焙，导出的衣物代理也引用它。留空时使用源动画烘焙 Main。"))
+		TObjectPtr<UAnimSequence> ExistingBakedBodyAnimation = nullptr;
 
 	UPROPERTY(EditAnywhere,
 			  Category = "代理运动",
@@ -83,7 +86,7 @@ public:
 
 	UPROPERTY(EditAnywhere,
 			  Category = "代理运动",
-			  meta = (DisplayName = "主部件代理动作集合",
+			  meta = (DisplayName = "主部件代理动作集合", EditCondition = "ExistingBakedBodyAnimation == nullptr",
 					  ToolTip = "可选。烘焙后自动更新 Main 的源动作映射；未指定时创建新集合。需要同时指定主部件衣物代理定义。"))
 		TObjectPtr<UKawaiiClothingProxyMotionSet> ProxyMotionSet = nullptr;
 
@@ -101,7 +104,7 @@ public:
 	UPROPERTY(EditAnywhere, Category = "输出", meta = (DisplayName = "输出名称前缀", ToolTip = "新动画资产的名称前缀，必须是合法且非空的资产名称。"))
 		FString OutputPrefix = TEXT("Baked");
 
-	UPROPERTY(EditAnywhere, Category = "输出", meta = (DisplayName = "烘焙后替换源动画（保持名称和引用）",
+	UPROPERTY(EditAnywhere, Category = "输出", meta = (DisplayName = "烘焙后替换源动画（保持名称和引用）", EditCondition = "ExistingBakedBodyAnimation == nullptr",
 		ToolTip = "默认关闭。开启后将 Main 烘焙结果写回源动画，代理的身体动画也直接引用该源动画，不再额外生成 Main 动画资产；保留原资产路径、名称、Notify、同步标记和 Root Motion 设置，现有蒙太奇及动画蓝图引用无需重接。覆盖前在输出目录保存 SourceBackup 备份。附加衣物仍单独导出；此选项不会替换部件动画。"))
 		bool bReplaceSourceAnimation = false;
 
@@ -126,7 +129,7 @@ public:
 		TArray<FName> PreviewCollisionRootBones;
 
 	/** Legacy bridge is independent of the preview-only option and affects exported tracks. */
-	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "启用旧配置碰撞（写入烘焙）", ToolTip = "使用旧碰撞配置，影响预览和导出动画。若同时预览运行时修正，会在相同的烘焙基础姿态上追加修正。需要有效配置、来源部件和至少 2 个预热帧。"))
+	UPROPERTY(EditAnywhere, Category = "衣物碰撞", meta = (DisplayName = "启用旧配置碰撞（写入烘焙）", EditCondition = "ExistingBakedBodyAnimation == nullptr", ToolTip = "使用旧碰撞配置，影响预览和导出动画。若同时预览运行时修正，会在相同的烘焙基础姿态上追加修正。需要有效配置、来源部件和至少 2 个预热帧。"))
 		bool bEnableClothingCollision = false;
 
 	/** The name of the part whose final pose supplies the Main mesh's clothing proxy. */

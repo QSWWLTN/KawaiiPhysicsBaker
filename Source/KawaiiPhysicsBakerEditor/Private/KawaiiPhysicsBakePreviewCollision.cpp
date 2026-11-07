@@ -46,6 +46,11 @@ namespace KawaiiPhysicsBakePreviewCollision {
 
 		OutProfile.DynamicCapsules.Reserve(Definition.Shapes.Num());
 		for (const FKawaiiClothingProxyShape& Shape : Definition.Shapes) {
+			if (Shape.bBox) {
+				OutProfile.DynamicCapsules.Reset();
+				OutError = TEXT("旧版 Kawaii 衣物碰撞快照只支持球体和胶囊；盒体请使用运行时自动代理修正预览。");
+				return false;
+			}
 			FKawaiiClothingCapsuleDefinition& Capsule = OutProfile.DynamicCapsules.AddDefaulted_GetRef();
 			Capsule.bUseSockets = false;
 			Capsule.StartBone = Shape.StartBone;

@@ -24,16 +24,17 @@ DEFINE_LOG_CATEGORY_STATIC(LogKawaiiGPUDeformer, Log, All);
 DECLARE_GPU_STAT_NAMED(KawaiiGPUCorrection, TEXT("Kawaii Physics Correction"));
 
 IMPLEMENT_GLOBAL_SHADER(FKawaiiCorrectionSolveCS, "/Plugin/KawaiiPhysicsBakerRuntime/Private/KawaiiCorrectionSolve.usf", "Main", SF_Compute);
+IMPLEMENT_GLOBAL_SHADER(FKawaiiCorrectionBridgeCS, "/Plugin/KawaiiPhysicsBakerRuntime/Private/KawaiiCorrectionSolve.usf", "BridgesMain", SF_Compute);
 IMPLEMENT_GLOBAL_SHADER(FKawaiiCorrectionSkinCS, "/Plugin/KawaiiPhysicsBakerRuntime/Private/KawaiiCorrectionSkin.usf", "Main", SF_Compute);
 
 namespace KawaiiPhysicsGPU {
 	FRDGBufferRef AddSolvePass(FRDGBuilder& Graph, const FFrame& Frame, FRenderState& State, bool bReset) {
 		const uint32 Count = Frame.Points.Num() / PointStride;
-		bReset |= !State.History || State.PointCount != Count || State.Topology != Frame.Topology || State.ResetSerial != Frame.ResetSerial;
+		bReset |= !State.History || State.PointCount != Count || State.CapsuleVectorCount != uint32(Frame.Capsules.Num()) || State.Topology != Frame.Topology || State.ResetSerial != Frame.ResetSerial;
 		const bool bTemporal = Frame.SettleTime > 0.f || Frame.SmoothingTime > 0.f;
 		FRDGBufferRef HistoryBuffer;
-		if (!State.History || State.PointCount != Count) {
-			HistoryBuffer = Graph.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FVector4f), Count * 2), TEXT("KawaiiGPU.History"));
+		if (!State.History || State.PointCount != Count || State.CapsuleVectorCount != uint32(Frame.Capsules.Num())) {
+			HistoryBuffer = Graph.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FVector4f), Count * 2 + Frame.Capsules.Num() * 2), TEXT("KawaiiGPU.History"));
 		} else {
 			HistoryBuffer = Graph.RegisterExternalBuffer(State.History);
 		}
@@ -44,6 +45,7 @@ namespace KawaiiPhysicsGPU {
 		}
 		Graph.QueueBufferExtraction(HistoryBuffer, &State.History);
 		State.PointCount = Count;
+		State.CapsuleVectorCount = Frame.Capsules.Num();
 		State.Topology = Frame.Topology;
 		State.ResetSerial = Frame.ResetSerial;
 		const FVector4f EmptyCapsule(0, 0, 0, 0);
@@ -53,6 +55,8 @@ namespace KawaiiPhysicsGPU {
 		Parameters->AdvanceHistory = bAdvance;
 		Parameters->UseSideHistory = Frame.SettleTime > 0.f;
 		Parameters->UseSmoothing = Frame.SmoothingTime > 0.f;
+		Parameters->CapsuleHistoryOffset = Count * 2;
+		Parameters->ShapeHistoryOffset = Count * 2 + Frame.Capsules.Num();
 		Parameters->SettleAlpha = Frame.SettleTime > 0.f ? 1.f - FMath::Exp(-Frame.DeltaTime / Frame.SettleTime) : 1.f;
 		Parameters->SmoothingAlpha = Frame.SmoothingTime > 0.f ? 1.f - FMath::Exp(-Frame.DeltaTime / Frame.SmoothingTime) : 1.f;
 		Parameters->Chains = Graph.CreateSRV(CreateStructuredBuffer(
@@ -79,10 +83,26 @@ namespace KawaiiPhysicsGPU {
 			Frame.Capsules.IsEmpty() ? &EmptyCapsule : Frame.Capsules.GetData(),
 			FMath::Max(1, Frame.Capsules.Num()) * sizeof(FVector4f)
 		));
+		TArray<FVector4f> ShapeData = Frame.ShapeData;
+		if (ShapeData.Num() != Frame.Capsules.Num()) { ShapeData.Init(FVector4f(0, 0, 0, 0), Frame.Capsules.Num()); }
+		if (ShapeData.IsEmpty()) { ShapeData.Add(EmptyCapsule); }
+		Parameters->ShapeData = Graph.CreateSRV(CreateStructuredBuffer(Graph, TEXT("KawaiiGPU.ShapeData"), sizeof(FVector4f), ShapeData.Num(), ShapeData.GetData(), ShapeData.Num() * sizeof(FVector4f)));
 		Parameters->History = Graph.CreateUAV(HistoryBuffer);
 		auto* Deltas = Graph.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FVector4f), Count * 3), TEXT("KawaiiGPU.Deltas"));
 		Parameters->Deltas = Graph.CreateUAV(Deltas);
-		TShaderMapRef<FKawaiiCorrectionSolveCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+		Parameters->RawPoints = Graph.CreateUAV(Graph.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FVector4f), Count), TEXT("KawaiiGPU.RawPoints")));
+		Parameters->BridgeCount = Frame.BridgeRanges.Num();
+		Parameters->BridgePointCount = Count;
+		Parameters->BridgePushes = Graph.CreateUAV(Graph.CreateBuffer(FRDGBufferDesc::CreateStructuredDesc(sizeof(FVector4f), Count), TEXT("KawaiiGPU.BridgePushes")));
+		const FUintVector4 EmptyRange(0, 0, 0, 0);
+		Parameters->BridgeRanges = Graph.CreateSRV(CreateStructuredBuffer(Graph, TEXT("KawaiiGPU.BridgeRanges"), sizeof(FUintVector4), FMath::Max(1, Frame.BridgeRanges.Num()),
+			Frame.BridgeRanges.IsEmpty() ? &EmptyRange : Frame.BridgeRanges.GetData(), FMath::Max(1, Frame.BridgeRanges.Num()) * sizeof(FUintVector4)));
+		Parameters->BridgeFlags = Graph.CreateSRV(CreateStructuredBuffer(Graph, TEXT("KawaiiGPU.BridgeFlags"), sizeof(FUintVector4), FMath::Max(1, Frame.BridgeFlags.Num()),
+			Frame.BridgeFlags.IsEmpty() ? &EmptyRange : Frame.BridgeFlags.GetData(), FMath::Max(1, Frame.BridgeFlags.Num()) * sizeof(FUintVector4)));
+		Parameters->BridgeParameters = Graph.CreateSRV(CreateStructuredBuffer(Graph, TEXT("KawaiiGPU.BridgeParameters"), sizeof(FVector4f), FMath::Max(1, Frame.BridgeParameters.Num()),
+			Frame.BridgeParameters.IsEmpty() ? &EmptyCapsule : Frame.BridgeParameters.GetData(), FMath::Max(1, Frame.BridgeParameters.Num()) * sizeof(FVector4f)));
+		const auto Common = *Parameters;
+		TShaderMapRef<FKawaiiCorrectionSolveCS> Shader(GetGlobalShaderMap(GMaxRHIFeatureLevel), FKawaiiCorrectionSolveCS::FPermutationDomain());
 		FComputeShaderUtils::AddPass(
 			Graph,
 			RDG_EVENT_NAME("KawaiiGPU Solve (%d chains)", Frame.Chains.Num()),
@@ -90,6 +110,19 @@ namespace KawaiiPhysicsGPU {
 			Parameters,
 			FIntVector(Frame.Chains.Num(), 1, 1)
 		);
+		if (!Frame.BridgeRanges.IsEmpty()) {
+			TShaderMapRef<FKawaiiCorrectionBridgeCS> BridgeShader(GetGlobalShaderMap(GMaxRHIFeatureLevel));
+			FKawaiiCorrectionSolveCS::FPermutationDomain Permutation; Permutation.Set<FKawaiiCorrectionSolveCS::FRefine>(true);
+			TShaderMapRef<FKawaiiCorrectionSolveCS> RefineShader(GetGlobalShaderMap(GMaxRHIFeatureLevel), Permutation);
+			for (int32 I = 0; I < Frame.BridgeIterations; ++I) {
+				auto* B = Graph.AllocParameters<FKawaiiCorrectionBridgeCS::FParameters>(); *B = Common;
+				FComputeShaderUtils::AddPass(Graph, RDG_EVENT_NAME("KawaiiGPU Bridge feedback"), BridgeShader, B, FIntVector(1, 1, 1));
+				auto* R = Graph.AllocParameters<FKawaiiCorrectionSolveCS::FParameters>(); *R = Common;
+				R->ResetHistory = 1; R->UseSideHistory = 0; R->UseSmoothing = 0;
+				R->AdvanceHistory = bAdvance && I + 1 == Frame.BridgeIterations;
+				FComputeShaderUtils::AddPass(Graph, RDG_EVENT_NAME("KawaiiGPU Bridge chain projection"), RefineShader, R, FIntVector(Frame.Chains.Num(), 1, 1));
+			}
+		}
 		return Deltas;
 	}
 

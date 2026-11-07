@@ -28,6 +28,29 @@
 
 #define LOCTEXT_NAMESPACE "KawaiiPhysicsBakePanel"
 
+class FKawaiiPhysicsBakeViewportClient : public FEditorViewportClient
+{
+public:
+	FKawaiiPhysicsBakeViewportClient(TSharedRef<FKawaiiPhysicsBakeSession> InSession, TSharedRef<SEditorViewport> InViewport)
+		: FEditorViewportClient(nullptr, InSession->GetPreviewScene(), InViewport), Session(InSession) {}
+
+	virtual void Draw(const FSceneView* View, FPrimitiveDrawInterface* PDI) override {
+		FEditorViewportClient::Draw(View, PDI);
+		if (bShowClothingProxies) {
+			Session->DrawClothingProxies(PDI);
+		}
+		if (bShowBones) {
+			Session->DrawPreviewBones(PDI);
+		}
+	}
+
+	bool bShowClothingProxies = false;
+	bool bShowBones = false;
+
+private:
+	TSharedRef<FKawaiiPhysicsBakeSession> Session;
+};
+
 class SKawaiiPhysicsBakeViewport : public SEditorViewport
 {
 public:
@@ -63,9 +86,20 @@ public:
 		}
 	}
 
+	bool ShowsClothingProxies() const { return ViewportClient->bShowClothingProxies; }
+	void ShowClothingProxies(bool bShow) {
+		ViewportClient->bShowClothingProxies = bShow;
+		Invalidate();
+	}
+	bool ShowsBones() const { return ViewportClient->bShowBones; }
+	void ShowBones(bool bShow) {
+		ViewportClient->bShowBones = bShow;
+		Invalidate();
+	}
+
 protected:
 	virtual TSharedRef<FEditorViewportClient> MakeEditorViewportClient() override {
-		ViewportClient = MakeShared<FEditorViewportClient>(nullptr, Session->GetPreviewScene(), SharedThis(this));
+		ViewportClient = MakeShared<FKawaiiPhysicsBakeViewportClient>(Session.ToSharedRef(), SharedThis(this));
 		ViewportClient->SetViewMode(VMI_Lit);
 		ViewportClient->SetViewportType(LVT_Perspective);
 		ViewportClient->SetViewLocation(FVector(250, 250, 140));
@@ -88,7 +122,7 @@ private:
 	FVector PreviousRoot = FVector::ZeroVector;
 	bool bFollowRoot = false;
 	TSharedPtr<FKawaiiPhysicsBakeSession> Session;
-	TSharedPtr<FEditorViewportClient> ViewportClient;
+	TSharedPtr<FKawaiiPhysicsBakeViewportClient> ViewportClient;
 };
 
 void SKawaiiPhysicsBakePanel::Construct(const FArguments&, UAnimBlueprint* InBlueprint) {
@@ -130,7 +164,7 @@ void SKawaiiPhysicsBakePanel::Construct(const FArguments&, UAnimBlueprint* InBlu
 		[
 			SNew(STextBlock)
 			.AutoWrapText(true)
-			.Text(LOCTEXT("Help", "选择源动画即可预览完整角色。拖动时间轴或逐帧查看物理效果，确认后再导出。修改动画图后请点击“编译并预览”。"))
+			.Text(LOCTEXT("Help", "选择源动画预览完整角色。追加烘焙衣物时，选择“已烘焙人物动画”复用人物动作。修改动画图后请点击“编译并预览”。"))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8, 0)
 		[
@@ -154,6 +188,9 @@ void SKawaiiPhysicsBakePanel::Construct(const FArguments&, UAnimBlueprint* InBlu
 				SNew(SButton)
 				.Text_Lambda([this] {
 					const UKawaiiPhysicsBakeSettings* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+					if (Settings && Settings->ExistingBakedBodyAnimation) {
+						return LOCTEXT("BakeClothing", "仅烘焙附加部件");
+					}
 					return Settings && Settings->bReplaceSourceAnimation ? LOCTEXT("BakeReplace", "烘焙并替换源动画") : LOCTEXT("Bake", "烘焙新动画");
 				})
 				.IsEnabled_Lambda([this] { return !Session->IsBaking(); })
@@ -275,8 +312,11 @@ bool SKawaiiPhysicsBakePanel::CompileGraphs() {
 		return false;
 	}
 	TSet<UAnimBlueprint*> Graphs;
-	Graphs.Add(Blueprint.Get());
-	for (const FKawaiiPhysicsBakePart& Part : KawaiiPhysicsBake::GetSettings(Blueprint.Get())->Parts) {
+	const UKawaiiPhysicsBakeSettings* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+	if (!Settings->ExistingBakedBodyAnimation) {
+		Graphs.Add(Blueprint.Get());
+	}
+	for (const FKawaiiPhysicsBakePart& Part : Settings->Parts) {
 		if (Part.Graph) {
 			Graphs.Add(Part.Graph);
 		}
@@ -352,8 +392,13 @@ void SKawaiiPhysicsBakePanel::SelectAnimation(const FAssetData& Asset) {
 		return;
 	}
 	const FScopedTransaction Transaction(LOCTEXT("Select", "选择烘焙动画"));
-	KawaiiPhysicsBake::GetSettings(Blueprint.Get())->Modify();
-	KawaiiPhysicsBake::GetSettings(Blueprint.Get())->SourceAnimation = Cast<UAnimSequence>(Asset.GetAsset());
+	UKawaiiPhysicsBakeSettings* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+	Settings->Modify();
+	if (Settings->ExistingBakedBodyAnimation) {
+		Settings->ExistingBakedBodyAnimation = Cast<UAnimSequence>(Asset.GetAsset());
+	} else {
+		Settings->SourceAnimation = Cast<UAnimSequence>(Asset.GetAsset());
+	}
 	Blueprint->MarkPackageDirty();
 	Details->ForceRefresh();
 	Play();
@@ -498,6 +543,26 @@ TSharedRef<SWidget> SKawaiiPhysicsBakePanel::MakePreviewControls() {
 				})
 				[
 					SNew(STextBlock).Text(LOCTEXT("LoopPreview", "循环"))
+				]
+			]
+			+ SWrapBox::Slot()
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([this] { return Preview->ShowsClothingProxies() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.OnCheckStateChanged_Lambda([this](ECheckBoxState State) { Preview->ShowClothingProxies(State == ECheckBoxState::Checked); })
+				.ToolTipText(LOCTEXT("ShowProxyHelp", "显示 Main 和衣物部件已指定的代理定义，跟随当前预览帧。此开关仅控制线框显示。"))
+				[
+					SNew(STextBlock).Text(LOCTEXT("ShowProxies", "显示衣物代理"))
+				]
+			]
+			+ SWrapBox::Slot()
+			[
+				SNew(SCheckBox)
+				.IsChecked_Lambda([this] { return Preview->ShowsBones() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+				.OnCheckStateChanged_Lambda([this](ECheckBoxState State) { Preview->ShowBones(State == ECheckBoxState::Checked); })
+				.ToolTipText(LOCTEXT("ShowBonesHelp", "显示主角色 Main 当前预览帧的实际骨骼姿态，包含预览代理修正结果。黄色为修正配置中的骨链，青色为其他骨骼；连线可透过网格查看，支持暂停和逐帧检查。"))
+				[
+					SNew(STextBlock).Text(LOCTEXT("ShowBones", "显示骨骼"))
 				]
 			]
 			+ SWrapBox::Slot()

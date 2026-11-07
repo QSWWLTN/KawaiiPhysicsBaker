@@ -1,11 +1,16 @@
 #include "SKawaiiClothingProxyPanel.h"
 
 #include "AdvancedPreviewScene.h"
+#include "AssetEditorModeManager.h"
 #include "AssetToolsModule.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "ContentBrowserModule.h"
 #include "Editor.h"
+#include "EditorModeManager.h"
 #include "EditorViewportClient.h"
+#include "Framework/Commands/GenericCommands.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "HitProxies.h"
 #include "Engine/SkeletalMesh.h"
 #include "HAL/FileManager.h"
 #include "IAssetTools.h"
@@ -20,20 +25,39 @@
 #include "SEditorViewport.h"
 #include "SceneManagement.h"
 #include "ScopedTransaction.h"
+#include "Styling/AppStyle.h"
 #include "UObject/GCObject.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "UObject/UnrealType.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SComboButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
 #include "KawaiiClothingProxyAsset.h"
+#include "KawaiiClothingProxyEditorGeometry.h"
 #include "KawaiiClothingProxyFactory.h"
 
 #define LOCTEXT_NAMESPACE "KawaiiClothingProxyPanel"
+
+using KawaiiClothingProxyEditor::EEditTarget;
+
+struct HKawaiiClothingProxyShape : public HHitProxy
+{
+	DECLARE_HIT_PROXY();
+	HKawaiiClothingProxyShape(int32 InIndex, EEditTarget InTarget = EEditTarget::Shape)
+		: HHitProxy(HPP_UI), Index(InIndex), Target(InTarget) {}
+	virtual EMouseCursor::Type GetMouseCursor() override { return EMouseCursor::Crosshairs; }
+	int32 Index;
+	EEditTarget Target;
+};
+
+IMPLEMENT_HIT_PROXY(HKawaiiClothingProxyShape, HHitProxy);
 
 class FKawaiiClothingProxyPreview : public FGCObject
 {
@@ -74,34 +98,48 @@ public:
 		}
 	}
 
+	int32 GetSelectedIndex() const {
+		const UKawaiiClothingProxyAsset* Asset = Definition.Get();
+		return Asset && bHasSelection ? Asset->Shapes.IndexOfByPredicate([this](const FKawaiiClothingProxyShape& Shape) { return Shape.Id == SelectedId; }) : INDEX_NONE;
+	}
+
+	void SelectShape(int32 Index, EEditTarget Target = EEditTarget::Shape) {
+		const UKawaiiClothingProxyAsset* Asset = Definition.Get();
+		bHasSelection = Asset && Asset->Shapes.IsValidIndex(Index);
+		SelectedId = bHasSelection ? Asset->Shapes[Index].Id : NAME_None;
+		EditTarget = Target;
+	}
+
+	bool GetGeometry(int32 Index, KawaiiClothingProxyEditor::FGeometry& Out) const {
+		const UKawaiiClothingProxyAsset* Asset = Definition.Get();
+		const USkeletalMesh* Mesh = Component->GetSkeletalMeshAsset();
+		return Asset && Mesh && Asset->Shapes.IsValidIndex(Index)
+			&& KawaiiClothingProxyEditor::ResolveGeometry(Asset->Shapes[Index], Mesh->GetRefSkeleton(), ReferencePose, Component->GetComponentTransform(), Out);
+	}
+
 	void Draw(FPrimitiveDrawInterface* PDI) const {
 		const UKawaiiClothingProxyAsset* Asset = Definition.Get();
 		const USkeletalMesh* Mesh = Component->GetSkeletalMeshAsset();
 		if (!Asset || !Mesh) {
 			return;
 		}
-		const FReferenceSkeleton& Ref = Mesh->GetRefSkeleton();
 		for (int32 Index = 0; Index < Asset->Shapes.Num(); ++Index) {
-			const FKawaiiClothingProxyShape& Shape = Asset->Shapes[Index];
-			const int32 Start = Ref.FindBoneIndex(Shape.StartBone);
-			const int32 End = Ref.FindBoneIndex(Shape.EndBone.IsNone() ? Shape.StartBone : Shape.EndBone);
-			if (!ReferencePose.IsValidIndex(Start) || !ReferencePose.IsValidIndex(End) || Shape.StartOffset.ContainsNaN() || Shape.EndOffset.ContainsNaN()
-				|| !FMath::IsFinite(Shape.Radius) || Shape.Radius <= 0.f)
-			{
+			KawaiiClothingProxyEditor::FGeometry Geometry;
+			if (!GetGeometry(Index, Geometry)) {
 				continue;
 			}
-			const FVector A = ReferencePose[Start].TransformPosition(Shape.StartOffset);
-			const FVector B = ReferencePose[End].TransformPosition(Shape.EndOffset);
-			const double Radius = Shape.Radius * FMath::Max(ReferencePose[Start].GetMaximumAxisScale(), ReferencePose[End].GetMaximumAxisScale());
-			const FLinearColor Color = FLinearColor::MakeFromHSV8(static_cast<uint8>((Index * 43) % 255), 190, 255);
-			const FVector Axis = B - A;
-			if (Axis.IsNearlyZero()) {
-				DrawWireSphere(PDI, A, Color, Radius, 24, SDPG_Foreground, 1.5f);
-			} else {
-				const FVector Z = Axis.GetSafeNormal();
-				FVector X, Y;
-				Z.FindBestAxisVectors(X, Y);
-				DrawWireCapsule(PDI, (A + B) * .5, X, Y, Z, Color, Radius, Axis.Size() * .5 + Radius, 24, SDPG_Foreground, 1.5f);
+			const bool bSelected = Index == GetSelectedIndex();
+			const FLinearColor Color = bSelected ? FLinearColor::Yellow : FLinearColor::MakeFromHSV8(static_cast<uint8>((Index * 43) % 255), 190, 255);
+			PDI->SetHitProxy(new HKawaiiClothingProxyShape(Index));
+			KawaiiClothingProxyEditor::Draw(PDI, Geometry, Color, bSelected ? 2.5f : 1.5f);
+			PDI->DrawLine(Geometry.Start, Geometry.End, Color, SDPG_Foreground, 1.5f, 0.f, true);
+			PDI->SetHitProxy(nullptr);
+			if (bSelected) {
+				PDI->SetHitProxy(new HKawaiiClothingProxyShape(Index, EEditTarget::Start));
+				PDI->DrawPoint(Geometry.Start, EditTarget == EEditTarget::Start ? FLinearColor::Yellow : FLinearColor::Green, 12.f, SDPG_Foreground);
+				PDI->SetHitProxy(new HKawaiiClothingProxyShape(Index, EEditTarget::End));
+				PDI->DrawPoint(Geometry.End, EditTarget == EEditTarget::End ? FLinearColor::Yellow : FLinearColor::Blue, 12.f, SDPG_Foreground);
+				PDI->SetHitProxy(nullptr);
 			}
 		}
 	}
@@ -110,21 +148,156 @@ public:
 	TObjectPtr<USkeletalMeshComponent> Component;
 	TWeakObjectPtr<UKawaiiClothingProxyAsset> Definition;
 	TArray<FTransform> ReferencePose;
+	FName SelectedId;
+	bool bHasSelection = false;
+	EEditTarget EditTarget = EEditTarget::Shape;
+	FSimpleDelegate OnShapeEdited;
 };
 
 class FKawaiiClothingProxyViewportClient : public FEditorViewportClient
 {
 public:
 	FKawaiiClothingProxyViewportClient(TSharedRef<FKawaiiClothingProxyPreview> InPreview, TSharedRef<SEditorViewport> InViewport)
-		: FEditorViewportClient(nullptr, &InPreview->Scene, InViewport), Preview(InPreview) {}
+		: FEditorViewportClient(nullptr, &InPreview->Scene, InViewport), Preview(InPreview) {
+		// A standalone asset viewport starts without active modes; UE suppresses its native widget until a mode enables it.
+		StaticCastSharedPtr<FAssetEditorModeManager>(ModeTools)->SetPreviewScene(&InPreview->Scene);
+		ModeTools->ActivateDefaultMode();
+		EngineShowFlags.SetModeWidgets(true);
+	}
 
 	virtual void Draw(const FSceneView* View, FPrimitiveDrawInterface* PDI) override {
-		FEditorViewportClient::Draw(View, PDI);
 		Preview->Draw(PDI);
+		FEditorViewportClient::Draw(View, PDI);
 	}
+
+	virtual void ProcessClick(FSceneView& View, HHitProxy* HitProxy, FKey Key, EInputEvent Event, uint32 HitX, uint32 HitY) override {
+		if (Key == EKeys::LeftMouseButton && HitProxy && HitProxy->IsA(HKawaiiClothingProxyShape::StaticGetType())) {
+			const auto* ShapeProxy = static_cast<HKawaiiClothingProxyShape*>(HitProxy);
+			Preview->SelectShape(ShapeProxy->Index, ShapeProxy->Target);
+			if (ShapeProxy->Target != EEditTarget::Shape) {
+				SetWidgetMode(UE::Widget::WM_Translate);
+			}
+			Invalidate();
+			return;
+		}
+		if (Key == EKeys::LeftMouseButton && !HitProxy) {
+			Preview->SelectShape(INDEX_NONE);
+			Invalidate();
+		}
+	}
+
+	virtual UE::Widget::EWidgetMode GetWidgetMode() const override {
+		KawaiiClothingProxyEditor::FGeometry Geometry;
+		return Preview->GetGeometry(Preview->GetSelectedIndex(), Geometry) ? WidgetMode : UE::Widget::WM_None;
+	}
+
+	virtual bool CanSetWidgetMode(UE::Widget::EWidgetMode Mode) const override {
+		return !bEditing && (Mode == UE::Widget::WM_Translate || Mode == UE::Widget::WM_Scale);
+	}
+
+	virtual void SetWidgetMode(UE::Widget::EWidgetMode Mode) override {
+		if (CanSetWidgetMode(Mode)) {
+			WidgetMode = Mode;
+			if (Mode == UE::Widget::WM_Scale) {
+				Preview->EditTarget = EEditTarget::Shape;
+			}
+			Invalidate();
+		}
+	}
+
+	virtual FVector GetWidgetLocation() const override {
+		KawaiiClothingProxyEditor::FGeometry Geometry;
+		if (!Preview->GetGeometry(Preview->GetSelectedIndex(), Geometry)) {
+			return FVector::ZeroVector;
+		}
+		return Preview->EditTarget == EEditTarget::Start ? Geometry.Start
+			: Preview->EditTarget == EEditTarget::End ? Geometry.End : (Geometry.Start + Geometry.End) * 0.5;
+	}
+
+	virtual FMatrix GetWidgetCoordSystem() const override {
+		KawaiiClothingProxyEditor::FGeometry Geometry;
+		if (WidgetMode == UE::Widget::WM_Scale && Preview->GetGeometry(Preview->GetSelectedIndex(), Geometry) && (!Geometry.BoxExtent.IsZero() || !Geometry.Start.Equals(Geometry.End))) {
+			return !Geometry.BoxExtent.IsZero() ? FQuatRotationMatrix(Geometry.BoxRotation) : FRotationMatrix::MakeFromZ(Geometry.End - Geometry.Start);
+		}
+		return FMatrix::Identity;
+	}
+
+	virtual ECoordSystem GetWidgetCoordSystemSpace() const override {
+		return WidgetMode == UE::Widget::WM_Scale ? COORD_Local : COORD_World;
+	}
+
+	virtual void TrackingStarted(const FInputEventState&, bool bIsDraggingWidget, bool bNudge) override {
+		bEditing = bIsDraggingWidget || bNudge;
+		bHasScaleBaseline = false;
+		AccumulatedScale = FVector::ZeroVector;
+	}
+
+	virtual bool InputWidgetDelta(FViewport*, EAxisList::Type CurrentAxis, FVector& Drag, FRotator&, FVector& Scale) override {
+		KawaiiClothingProxyEditor::FGeometry Geometry;
+		const int32 Index = Preview->GetSelectedIndex();
+		if (!bEditing || CurrentAxis == EAxisList::None || !Preview->GetGeometry(Index, Geometry)) {
+			return false;
+		}
+		UKawaiiClothingProxyAsset* Asset = Preview->Definition.Get();
+		FKawaiiClothingProxyShape Edited = Asset->Shapes[Index];
+		bool bChanged = false;
+		if (WidgetMode == UE::Widget::WM_Scale) {
+			if (!bHasScaleBaseline) {
+				ScaleBaseline = Edited;
+				ScaleGeometry = Geometry;
+				bHasScaleBaseline = true;
+			}
+			// UE already converts normal scaling to fractional deltas. Its legacy percentage mode needs conversion.
+			AccumulatedScale += GEditor->UsePercentageBasedScaling()
+				? Scale * ((GEditor->GetScaleGridSize() / 100.0f) / GEditor->GetGridSize()) : Scale;
+			Edited = ScaleBaseline;
+			KawaiiClothingProxyEditor::Scale(Edited, ScaleGeometry, AccumulatedScale);
+			bChanged = Edited.Radius != Asset->Shapes[Index].Radius || !Edited.StartOffset.Equals(Asset->Shapes[Index].StartOffset)
+				|| !Edited.EndOffset.Equals(Asset->Shapes[Index].EndOffset);
+		} else {
+			bChanged = KawaiiClothingProxyEditor::Translate(Edited, Geometry, Drag, Preview->EditTarget);
+		}
+		if (bChanged) {
+			if (!Transaction) {
+				Transaction = MakeUnique<FScopedTransaction>(LOCTEXT("TransformProxy", "调整衣物代理"));
+				EditedAsset = Asset;
+				Asset->Modify();
+				Asset->PreEditChange(FindFProperty<FProperty>(UKawaiiClothingProxyAsset::StaticClass(), GET_MEMBER_NAME_CHECKED(UKawaiiClothingProxyAsset, Shapes)));
+			}
+			Asset->Shapes[Index] = Edited;
+			FPropertyChangedEvent Changed(FindFProperty<FProperty>(UKawaiiClothingProxyAsset::StaticClass(), GET_MEMBER_NAME_CHECKED(UKawaiiClothingProxyAsset, Shapes)), EPropertyChangeType::Interactive);
+			Asset->PostEditChangeProperty(Changed);
+			Invalidate();
+		}
+		return true;
+	}
+
+	virtual void TrackingStopped() override { FinishEdit(); }
+	void FinishEdit() {
+		bEditing = false;
+		if (Transaction) {
+			if (UKawaiiClothingProxyAsset* Asset = EditedAsset.Get()) {
+				FPropertyChangedEvent Changed(FindFProperty<FProperty>(UKawaiiClothingProxyAsset::StaticClass(), GET_MEMBER_NAME_CHECKED(UKawaiiClothingProxyAsset, Shapes)), EPropertyChangeType::ValueSet);
+				Asset->PostEditChangeProperty(Changed);
+				Asset->MarkPackageDirty();
+			}
+			Transaction.Reset();
+			EditedAsset.Reset();
+			Preview->OnShapeEdited.ExecuteIfBound();
+		}
+	}
+	bool IsEditing() const { return bEditing; }
 
 private:
 	TSharedRef<FKawaiiClothingProxyPreview> Preview;
+	UE::Widget::EWidgetMode WidgetMode = UE::Widget::WM_Translate;
+	bool bEditing = false;
+	bool bHasScaleBaseline = false;
+	FKawaiiClothingProxyShape ScaleBaseline;
+	KawaiiClothingProxyEditor::FGeometry ScaleGeometry;
+	FVector AccumulatedScale = FVector::ZeroVector;
+	TUniquePtr<FScopedTransaction> Transaction;
+	TWeakObjectPtr<UKawaiiClothingProxyAsset> EditedAsset;
 };
 
 class SKawaiiClothingProxyViewport : public SEditorViewport
@@ -141,6 +314,7 @@ public:
 
 	virtual ~SKawaiiClothingProxyViewport() {
 		if (Client) {
+			Client->FinishEdit();
 			Client->Viewport = nullptr;
 		}
 	}
@@ -152,6 +326,74 @@ public:
 	}
 
 protected:
+	virtual void BindCommands() override {
+		SEditorViewport::BindCommands();
+		CommandList->MapAction(FGenericCommands::Get().Undo,
+			FExecuteAction::CreateLambda([] { GEditor->UndoTransaction(); }),
+			FCanExecuteAction::CreateLambda([this] { return !Client->IsEditing(); }));
+		CommandList->MapAction(FGenericCommands::Get().Redo,
+			FExecuteAction::CreateLambda([] { GEditor->RedoTransaction(); }),
+			FCanExecuteAction::CreateLambda([this] { return !Client->IsEditing(); }));
+	}
+
+	virtual void OnFocusViewportToSelection() override {
+		KawaiiClothingProxyEditor::FGeometry Geometry;
+		if (Preview->GetGeometry(Preview->GetSelectedIndex(), Geometry)) {
+			FBox Bounds(Geometry.Start, Geometry.Start);
+			Bounds += Geometry.End;
+			Client->FocusViewportOnBox(Bounds.ExpandBy(Geometry.Radius + 5.0), true);
+		} else {
+			FrameMesh();
+		}
+	}
+
+	virtual TSharedPtr<SWidget> BuildViewportToolbar() override {
+		return SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(6.f, 4.f))
+			+ SWrapBox::Slot()
+			[
+				SNew(SComboButton)
+				.OnGetMenuContent_Lambda([this] {
+					FMenuBuilder Menu(true, nullptr);
+					if (const UKawaiiClothingProxyAsset* Asset = Preview->Definition.Get()) {
+						for (int32 Index = 0; Index < Asset->Shapes.Num(); ++Index) {
+							Menu.AddMenuEntry(FText::FromString(FString::Printf(TEXT("%d: %s"), Index, *Asset->Shapes[Index].Id.ToString())), FText::GetEmpty(), FSlateIcon(),
+								FUIAction(FExecuteAction::CreateLambda([this, Index] { Preview->SelectShape(Index); Client->Invalidate(); })));
+						}
+					}
+					return Menu.MakeWidget();
+				})
+				.ButtonContent()
+				[
+					SNew(STextBlock).Text_Lambda([this] {
+						return Preview->GetSelectedIndex() != INDEX_NONE ? FText::FromName(Preview->SelectedId) : LOCTEXT("SelectProxy", "选择代理");
+					})
+				]
+			]
+			+ SWrapBox::Slot() [ MakeModeButton(LOCTEXT("MoveProxy", "移动 (W)"), UE::Widget::WM_Translate) ]
+			+ SWrapBox::Slot() [ MakeModeButton(LOCTEXT("ScaleProxy", "缩放 (R)"), UE::Widget::WM_Scale) ]
+			+ SWrapBox::Slot() [ MakeTargetButton(LOCTEXT("WholeProxy", "整体"), EEditTarget::Shape) ]
+			+ SWrapBox::Slot() [ MakeTargetButton(LOCTEXT("StartProxy", "起点"), EEditTarget::Start) ]
+			+ SWrapBox::Slot() [ MakeTargetButton(LOCTEXT("EndProxy", "终点"), EEditTarget::End) ];
+	}
+
+	TSharedRef<SWidget> MakeModeButton(FText Label, UE::Widget::EWidgetMode Mode) {
+		return SNew(SCheckBox).Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+			.IsChecked_Lambda([this, Mode] { return Client->GetWidgetMode() == Mode ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+			.OnCheckStateChanged_Lambda([this, Mode](ECheckBoxState) { Client->SetWidgetMode(Mode); })
+			[ SNew(STextBlock).Text(Label) ];
+	}
+
+	TSharedRef<SWidget> MakeTargetButton(FText Label, EEditTarget Target) {
+		return SNew(SCheckBox).Style(FAppStyle::Get(), "ToggleButtonCheckbox")
+			.IsChecked_Lambda([this, Target] { return Preview->EditTarget == Target ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+			.OnCheckStateChanged_Lambda([this, Target](ECheckBoxState) {
+				Preview->EditTarget = Target;
+				if (Target != EEditTarget::Shape) { Client->SetWidgetMode(UE::Widget::WM_Translate); }
+				Client->Invalidate();
+			})
+			[ SNew(STextBlock).Text(Label) ];
+	}
+
 	virtual TSharedRef<FEditorViewportClient> MakeEditorViewportClient() override {
 		Client = MakeShared<FKawaiiClothingProxyViewportClient>(Preview.ToSharedRef(), SharedThis(this));
 		Client->SetViewMode(VMI_Lit);
@@ -173,6 +415,7 @@ private:
 
 void SKawaiiClothingProxyPanel::Construct(const FArguments&) {
 	PreviewScene = MakeShared<FKawaiiClothingProxyPreview>();
+	PreviewScene->OnShapeEdited = FSimpleDelegate::CreateSP(this, &SKawaiiClothingProxyPanel::GizmoEdited);
 	FDetailsViewArgs Args;
 	Args.bHideSelectionTip = true;
 	Args.NameAreaSettings = FDetailsViewArgs::HideNameArea;
@@ -187,7 +430,7 @@ void SKawaiiClothingProxyPanel::Construct(const FArguments&) {
 			.AutoWrapText(true)
 			.Text(LOCTEXT(
 				"Help",
-				"选择衣物网格体，创建或载入代理定义。右侧编辑球体／胶囊的骨骼端点、局部偏移和半径，左侧实时显示参考姿态。两端重合时为球体。保存后把定义指定到烘焙部件的衣物代理字段。"
+				"选择或点击代理线框后，W 移动、R 缩放、F 聚焦。移动可选择整体／起点／终点；缩放时 X/Y 调整半径，Z 调整胶囊长度，中心手柄等比缩放（球体各轴均调整半径，盒体按各轴调整半尺寸）。支持 Ctrl+Z / Ctrl+Y 撤销重做。右侧可精确编辑数值；完成后校验并保存。"
 			))
 		]
 		+ SVerticalBox::Slot().AutoHeight().Padding(8, 0)
@@ -252,7 +495,7 @@ void SKawaiiClothingProxyPanel::Construct(const FArguments&) {
 			[
 				SNew(SButton)
 				.Text(LOCTEXT("Import", "追加 PhysicsAsset 代理"))
-				.ToolTipText(LOCTEXT("ImportHelp", "追加衣物 PhysicsAsset 中有效的球体和胶囊，不导入盒体或凸包，不修改 PhysicsAsset。"))
+				.ToolTipText(LOCTEXT("ImportHelp", "追加衣物 PhysicsAsset 中有效的球体、胶囊和盒体，不导入凸包，不修改 PhysicsAsset。"))
 				.IsEnabled_Lambda([this] { return Definition.IsValid() && SelectedMesh.IsValid(); })
 				.OnClicked(this, &SKawaiiClothingProxyPanel::ImportPhysicsAsset)
 			]
@@ -338,7 +581,9 @@ void SKawaiiClothingProxyPanel::Tick(const FGeometry& Geometry, double CurrentTi
 
 void SKawaiiClothingProxyPanel::PostUndo(bool bSuccess) {
 	if (bSuccess) {
-		RefreshMesh();
+		if (Definition.IsValid() && Definition->PreviewMesh.ToSoftObjectPath() != LastPreviewMeshPath) {
+			RefreshMesh();
+		}
 		Details->ForceRefresh();
 	}
 }
@@ -353,6 +598,7 @@ void SKawaiiClothingProxyPanel::SetDefinition(UKawaiiClothingProxyAsset* Asset) 
 		Asset->SetFlags(RF_Transactional);
 	}
 	PreviewScene->Definition = Asset;
+	PreviewScene->SelectShape(Asset && !Asset->Shapes.IsEmpty() ? 0 : INDEX_NONE);
 	Details->SetObject(Asset);
 	RefreshMesh();
 	Message = Asset ? TEXT("已载入代理定义。编辑会修改此资产，可使用撤销；完成后点击“校验并保存”。") : FString();
@@ -415,6 +661,12 @@ void SKawaiiClothingProxyPanel::PropertiesChanged(const FPropertyChangedEvent&) 
 	}
 }
 
+void SKawaiiClothingProxyPanel::GizmoEdited() {
+	Details->ForceRefresh();
+	FPropertyChangedEvent Event(nullptr);
+	PropertiesChanged(Event);
+}
+
 bool SKawaiiClothingProxyPanel::ValidateDefinition(FString& Error) const {
 	if (!Definition.IsValid() || !SelectedMesh.IsValid() || !SelectedMesh->GetSkeleton()) {
 		Error = TEXT("请选择有效的代理定义和带骨架的衣物网格体。");
@@ -447,7 +699,7 @@ FReply SKawaiiClothingProxyPanel::CreateDefinition() {
 			.CreateAssetWithDialog(Factory->GetDefaultNewAssetName(), TEXT("/Game/KawaiiProxies"), UKawaiiClothingProxyAsset::StaticClass(), Factory.Get());
 	if (Asset) {
 		SetDefinition(CastChecked<UKawaiiClothingProxyAsset>(Asset));
-		Message = TEXT("已创建代理定义。选择骨骼添加代理，或追加 PhysicsAsset 中的球体／胶囊，然后校验并保存。");
+		Message = TEXT("已创建代理定义。选择骨骼添加代理，或追加 PhysicsAsset 中的球体／胶囊／盒体，然后校验并保存。");
 	}
 	return FReply::Handled();
 }
@@ -496,6 +748,7 @@ FReply SKawaiiClothingProxyPanel::AddShape() {
 		}
 	}
 	Definition->Shapes.Add(Shape);
+	PreviewScene->SelectShape(Definition->Shapes.Num() - 1);
 	Definition->PostEditChange();
 	Definition->MarkPackageDirty();
 	Details->ForceRefresh();
@@ -516,9 +769,9 @@ FReply SKawaiiClothingProxyPanel::ImportPhysicsAsset() {
 	Definition->Modify();
 	int32 Added = 0;
 	int32 Skipped = 0;
-	const auto Add = [&](FName Bone, const FVector& Center, const FRotator& Rotation, float Radius, float Length) {
+	const auto Add = [&](FName Bone, const FVector& Center, const FRotator& Rotation, float Radius, float Length, const FVector& BoxExtent = FVector(0., 0., 0.)) {
 		if (Definition->Shapes.Num() >= KawaiiClothingProxy::MaxShapes || SelectedMesh->GetRefSkeleton().FindBoneIndex(Bone) == INDEX_NONE
-			|| !FMath::IsFinite(Radius) || Radius <= 0.f || !FMath::IsFinite(Length) || Length < 0.f || Center.ContainsNaN() || Rotation.ContainsNaN())
+			|| !FMath::IsFinite(Radius) || Radius <= 0.f || !FMath::IsFinite(Length) || Length < 0.f || Center.ContainsNaN() || Rotation.ContainsNaN() || BoxExtent.ContainsNaN() || (!BoxExtent.IsZero() && BoxExtent.GetMin() <= 0.))
 		{
 			++Skipped;
 			return;
@@ -530,12 +783,16 @@ FReply SKawaiiClothingProxyPanel::ImportPhysicsAsset() {
 		Shape.StartOffset = Center - HalfAxis;
 		Shape.EndOffset = Center + HalfAxis;
 		Shape.Radius = Radius;
+		if (!BoxExtent.IsZero()) { Shape.bBox = true; Shape.BoxExtent = BoxExtent; Shape.BoxRotation = Rotation; }
 		Definition->Shapes.Add(Shape);
 		++Added;
 	};
 	for (const USkeletalBodySetup* Setup : Physics->SkeletalBodySetups) {
 		if (!Setup) {
 			continue;
+		}
+		for (const FKBoxElem& Shape : Setup->AggGeom.BoxElems) {
+			Add(Setup->BoneName, Shape.Center, Shape.Rotation, 1.f, 0.f, FVector(Shape.X, Shape.Y, Shape.Z) * .5);
 		}
 		for (const FKSphylElem& Shape : Setup->AggGeom.SphylElems) {
 			Add(Setup->BoneName, Shape.Center, Shape.Rotation, Shape.Radius, Shape.Length);
@@ -545,6 +802,9 @@ FReply SKawaiiClothingProxyPanel::ImportPhysicsAsset() {
 		}
 	}
 	if (Added > 0) {
+		if (PreviewScene->GetSelectedIndex() == INDEX_NONE) {
+			PreviewScene->SelectShape(Definition->Shapes.Num() - Added);
+		}
 		Definition->PostEditChange();
 		Definition->MarkPackageDirty();
 		Details->ForceRefresh();
@@ -552,7 +812,7 @@ FReply SKawaiiClothingProxyPanel::ImportPhysicsAsset() {
 		Transaction.Cancel();
 	}
 	Message = FString::Printf(
-		TEXT("已追加 %d 个有效球体／胶囊，保留原有代理。跳过 %d 个无效或超过 64 个上限的形状。盒体和凸包未导入；请在视口中检查贴合程度。"),
+		TEXT("已追加 %d 个有效球体／胶囊／盒体，保留原有代理。跳过 %d 个无效或超过 64 个上限的形状。凸包未导入；请在视口中检查贴合程度。"),
 		Added,
 		Skipped
 	);

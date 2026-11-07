@@ -18,11 +18,14 @@ namespace KawaiiClothingProxy {
 	bool ValidateShapes(const TArray<FKawaiiClothingProxyShape>& Shapes, FString& Error) {
 		Error.Reset();
 		if (Shapes.IsEmpty() || Shapes.Num() > MaxShapes) {
-			Error = FString::Printf(TEXT("衣物代理需要 1–%d 个球体或胶囊。"), MaxShapes);
+			Error = FString::Printf(TEXT("衣物代理需要 1–%d 个球体、胶囊或盒体。"), MaxShapes);
 			return false;
 		}
 		TSet<FName> Ids;
 		for (const FKawaiiClothingProxyShape& Shape : Shapes) {
+			if (Shape.bBox && (Shape.BoxRotation.ContainsNaN() || Shape.BoxExtent.ContainsNaN() || Shape.BoxExtent.GetMin() <= 0.)) {
+				Error = TEXT("盒体旋转和半尺寸必须有效，半尺寸必须大于零。"); return false;
+			}
 			if (Shape.Id.IsNone() || Ids.Contains(Shape.Id) || Shape.StartBone.IsNone()) {
 				Error = TEXT("代理名称必须非空且唯一，起点骨骼不能为空。");
 				return false;
@@ -61,6 +64,11 @@ namespace KawaiiClothingProxy {
 				Shape.EndOffset.Z,
 				static_cast<double>(Shape.Radius)
 			);
+			// Keep existing capsule-only signatures stable when upgrading the plugin.
+			if (Shape.bBox) {
+				Canonical += FString::Printf(TEXT("Box;%.17g,%.17g,%.17g;%.17g,%.17g,%.17g;"),
+					Shape.BoxExtent.X, Shape.BoxExtent.Y, Shape.BoxExtent.Z, Shape.BoxRotation.Pitch, Shape.BoxRotation.Yaw, Shape.BoxRotation.Roll);
+			}
 		}
 		FTCHARToUTF8 UTF8(*Canonical);
 		FMD5 Hash;
@@ -119,7 +127,7 @@ namespace KawaiiClothingProxy {
 		}
 		TSet<int32> Required;
 		for (const FKawaiiClothingProxyShape& Shape : Shapes) {
-			for (const FName Endpoint : {Shape.StartBone, Shape.EndBone.IsNone() ? Shape.StartBone : Shape.EndBone}) {
+			for (const FName Endpoint : {Shape.StartBone, Shape.bBox || Shape.EndBone.IsNone() ? Shape.StartBone : Shape.EndBone}) {
 				int32 Bone = Skeleton.FindBoneIndex(Endpoint);
 				if (Bone < 0 || Bone >= Count) {
 					Error = FString::Printf(TEXT("代理 %s 引用了不存在或非真实骨骼的 %s。"), *Shape.Id.ToString(), *Endpoint.ToString());

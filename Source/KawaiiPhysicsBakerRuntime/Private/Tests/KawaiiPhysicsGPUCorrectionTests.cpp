@@ -200,6 +200,322 @@ bool FKawaiiGPUSolveTest::RunTest(const FString&) {
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiGPUAngularTest,
+	"KawaiiPhysicsBaker.GPU.AngularParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiGPUAngularTest::RunTest(const FString&) {
+	using namespace KawaiiPhysicsGPU;
+	if (!GDynamicRHI || GUsingNullRHI || GMaxRHIFeatureLevel < ERHIFeatureLevel::SM5) {
+		AddWarning(TEXT("GPU parity requires a real SM5 RHI; skipped under NullRHI."));
+		return true;
+	}
+	KawaiiPhysicsGPU::FFrame Frame;
+	Frame.DeltaTime = 1.f / 60.f;
+	Frame.Topology = 123;
+	Frame.ResetSerial = 1;
+	const TArray<TArray<FVector>> Cases = {
+		{{0, 0, 10}, {0, 0, 5}, {0, 0, 0}, {0, 0, -5}},
+		{{-5, 0, 0}, {5, 0, 0}}, // Segment crosses a capsule although its endpoints are outside.
+		{{0, 0, 0}, {0, 0, -4}, {0, 0, -8}}, // Pinned root overlap must remain finite.
+		{{-5, 0, 3}, {-2, 0, 3}, {1, 0, 3}, {4, 0, 3}},
+		{{0, 0, 5}, {0, 0, 5}, {0, 0, 0}} // Zero-length segment.
+	};
+	const TArray<KawaiiPhysicsIKCorrection::FCapsule> Capsules = {{FVector(0, -3, 0), FVector(0, 3, 0), 1.5}, {FVector(2, -2, -3), FVector(2, 2, -3), 1.0}};
+	TArray<FVector> Expected;
+	TArray<FVector> Reference;
+	for (const auto& Input : Cases) {
+		FChain Chain;
+		Chain.Range = FUintVector4(Expected.Num(), Input.Num(), Frame.Capsules.Num() / 2, Capsules.Num());
+		Chain.Parameters = FVector4f(0.25f, 1.f, 16.f, 0.f);
+		Chain.AnchorRotation = FVector4f(0, 0, 0, 1);
+		Chain.AnchorPosition = FVector4f(0, 0, 0, 0);
+		Chain.AnchorScale = FVector4f(1, 1, 1, 0);
+		Frame.Chains.Add(Chain);
+		TArray<double> Lengths;
+		KawaiiPhysicsIKCorrection::FAngularConstraints Angular; Angular.Pose = Input;
+		Angular.LimitRadians.Init(FMath::DegreesToRadians(40.), Input.Num()); Angular.MaxBendChangeRadians = FMath::DegreesToRadians(20.);
+		for (int32 Index = 0; Index < Input.Num(); ++Index) {
+			const double Length = Index > 0 ? FVector::Distance(Input[Index - 1], Input[Index]) : 0;
+			if (Index > 0) {
+				Lengths.Add(Length);
+			}
+			Frame.Points.Append(
+				{FVector4f(FVector3f(Input[Index]), Length),
+				 FVector4f(FVector3f(Input[Index]), 0),
+				 FVector4f(0, 0, 0, 1),
+				 FVector4f(1, 1, 1, Angular.LimitRadians[Index]),
+				 FVector4f(0, 0, 0, 1),
+				 FVector4f(1, 1, 1, Angular.MaxBendChangeRadians)}
+			);
+		}
+		for (const auto& Capsule : Capsules) {
+			Frame.Capsules.Add(FVector4f(FVector3f(Capsule.Start), Capsule.Radius));
+			Frame.Capsules.Add(FVector4f(FVector3f(Capsule.End), 0));
+		}
+		auto CPU = Input;
+		TestTrue(TEXT("CPU reference finite"), KawaiiPhysicsIKCorrection::SolveChain(CPU, Lengths, Input, Capsules, 16, .25, nullptr, nullptr, nullptr, &Angular).bFinite);
+		Expected.Append(CPU);
+		Reference.Append(Input);
+	}
+	TArray<FVector4f> Result;
+	// Synchronous readback exists only in this automation test. Runtime has no readback or GPU wait.
+	ENQUEUE_RENDER_COMMAND(KawaiiGPUParity)([&Frame, &Result](FRHICommandListImmediate& RHICmdList) {
+		FRenderState State;
+		FRHIGPUBufferReadback Readback(TEXT("KawaiiGPU.Parity"));
+		FRDGBuilder Graph(RHICmdList);
+		auto* Deltas = AddSolvePass(Graph, Frame, State, true);
+		AddEnqueueCopyPass(Graph, &Readback, Deltas, 0u);
+		Graph.Execute();
+		RHICmdList.BlockUntilGPUIdle();
+		const uint32 Count = Frame.Points.Num() / PointStride * 3;
+		const void* Data = Readback.Lock(Count * sizeof(FVector4f));
+		if (Data) {
+			Result.SetNumUninitialized(Count);
+			FMemory::Memcpy(Result.GetData(), Data, Count * sizeof(FVector4f));
+			Readback.Unlock();
+		}
+	});
+	FlushRenderingCommands();
+	if (!TestEqual(TEXT("GPU delta count"), Result.Num(), Expected.Num() * 3)) {
+		return false;
+	}
+	double MaxError = 0;
+	for (int32 Index = 0; Index < Expected.Num(); ++Index) {
+		const FVector4f ReferencePosition(FVector3f(Reference[Index]), 1.f);
+		const FVector Position(
+			Dot4(Result[Index * 3], ReferencePosition),
+			Dot4(Result[Index * 3 + 1], ReferencePosition),
+			Dot4(Result[Index * 3 + 2], ReferencePosition)
+		);
+		const double Error = FVector::Distance(Position, Expected[Index]);
+		MaxError = FMath::Max(MaxError, Error);
+		TestTrue(FString::Printf(TEXT("Point %d finite and within 0.03 cm (error %.6f)"), Index, Error), !Position.ContainsNaN() && Error < .03);
+	}
+	AddInfo(FString::Printf(TEXT("GPU/CPU solver max position error: %.6f cm across %d points."), MaxError, Expected.Num()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiGPUBridgeTest,
+	"KawaiiPhysicsBaker.GPU.BridgeFeedbackParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiGPUBridgeTest::RunTest(const FString&) {
+	using namespace KawaiiPhysicsGPU;
+	if (!GDynamicRHI || GUsingNullRHI || GMaxRHIFeatureLevel < ERHIFeatureLevel::SM5) {
+		AddWarning(TEXT("GPU parity requires a real SM5 RHI; skipped under NullRHI."));
+		return true;
+	}
+	KawaiiPhysicsGPU::FFrame Frame;
+	Frame.DeltaTime = 1.f / 60.f;
+	Frame.Topology = 123;
+	Frame.ResetSerial = 1;
+	const TArray<TArray<FVector>> Cases = {
+		{{-4, 0, 10}, {-4, 0, 5}, {-4, 0, 0}}, {{4, 0, 10}, {4, 0, 5}, {4, 0, 0}}
+	};
+	const TArray<KawaiiPhysicsIKCorrection::FCapsule> Capsules = {{FVector::ZeroVector, FVector::ZeroVector, 1.5}};
+	TArray<FVector> Expected;
+	TArray<FVector> Reference;
+	for (const auto& Input : Cases) {
+		FChain Chain;
+		Chain.Range = FUintVector4(Expected.Num(), Input.Num(), Frame.Capsules.Num() / 2, Capsules.Num());
+		Chain.Parameters = FVector4f(0.25f, 1.f, 16.f, 0.f);
+		Chain.AnchorRotation = FVector4f(0, 0, 0, 1);
+		Chain.AnchorPosition = FVector4f(0, 0, 0, 0);
+		Chain.AnchorScale = FVector4f(1, 1, 1, 0);
+		Frame.Chains.Add(Chain);
+		TArray<double> Lengths;
+		KawaiiPhysicsIKCorrection::FAngularConstraints Angular; Angular.Pose = Input;
+		Angular.LimitRadians.Init(FMath::DegreesToRadians(60.), Input.Num()); Angular.MaxBendChangeRadians = FMath::DegreesToRadians(10.);
+		for (int32 Index = 0; Index < Input.Num(); ++Index) {
+			const double Length = Index > 0 ? FVector::Distance(Input[Index - 1], Input[Index]) : 0;
+			if (Index > 0) {
+				Lengths.Add(Length);
+			}
+			Frame.Points.Append(
+				{FVector4f(FVector3f(Input[Index]), Length),
+				 FVector4f(FVector3f(Input[Index]), 0),
+				 FVector4f(0, 0, 0, 1),
+				 FVector4f(1, 1, 1, Angular.LimitRadians[Index]),
+				 FVector4f(0, 0, 0, 1),
+				 FVector4f(1, 1, 1, Angular.MaxBendChangeRadians)}
+			);
+		}
+		for (const auto& Capsule : Capsules) {
+			Frame.Capsules.Add(FVector4f(FVector3f(Capsule.Start), Capsule.Radius));
+			Frame.Capsules.Add(FVector4f(FVector3f(Capsule.End), 0));
+		}
+		auto CPU = Input;
+		TestTrue(TEXT("CPU reference finite"), KawaiiPhysicsIKCorrection::SolveChain(CPU, Lengths, Input, Capsules, 16, .25, nullptr, nullptr, nullptr, &Angular).bFinite);
+		Expected.Append(CPU);
+		Reference.Append(Input);
+	}
+	Frame.BridgeRanges = {FUintVector4(2, 5, 0, 1)};
+	Frame.BridgeParameters = {FVector4f(.25, .25, 1., 3.)};
+	Frame.BridgeFlags = {FUintVector4(0, 0, 0, 0)};
+	Frame.BridgeIterations = 16;
+	KawaiiPhysicsIKCorrection::FContactBridge Bridge;
+	Bridge.A = 2; Bridge.B = 5; Bridge.RadiusA = Bridge.RadiusB = .25; Bridge.Samples = 3; Bridge.Shapes = Capsules;
+	// Multiple contacts share endpoints; exercise the native aggregation rule and the full 0-10 count range.
+	Frame.BridgeRanges.Add(FUintVector4(2, 5, 0, 1));
+	Frame.BridgeParameters.Add(FVector4f(.25, .25, 1., 10.));
+	Frame.BridgeFlags.Add(FUintVector4(0, 0, 0, 0));
+	auto DenseBridge = Bridge; DenseBridge.Samples = 10;
+	for (int32 Iteration = 0; Iteration < Frame.BridgeIterations; ++Iteration) {
+		KawaiiPhysicsIKCorrection::ProjectBridges(Expected, Reference, {Bridge, DenseBridge});
+		for (int32 C = 0; C < 2; ++C) {
+			TArray<FVector> Points{Expected[C * 3], Expected[C * 3 + 1], Expected[C * 3 + 2]};
+			KawaiiPhysicsIKCorrection::FAngularConstraints Angular; Angular.Pose = Cases[C]; Angular.LimitRadians.Init(FMath::DegreesToRadians(60.),3); Angular.MaxBendChangeRadians = FMath::DegreesToRadians(10.);
+			KawaiiPhysicsIKCorrection::SolveChain(Points, {5., 5.}, Cases[C], Capsules, 1, .25, nullptr, nullptr, nullptr, &Angular);
+			for (int32 I = 0; I < 3; ++I) { Expected[C * 3 + I] = Points[I]; }
+		}
+	}
+	TestTrue(TEXT("A surface span collides even though both longitudinal chains miss the primitive"), (Expected[2].Y + Expected[5].Y) * .5 > 1.5);
+
+	TArray<FVector4f> Result;
+	// Synchronous readback exists only in this automation test. Runtime has no readback or GPU wait.
+	ENQUEUE_RENDER_COMMAND(KawaiiGPUParity)([&Frame, &Result](FRHICommandListImmediate& RHICmdList) {
+		FRenderState State;
+		FRHIGPUBufferReadback Readback(TEXT("KawaiiGPU.Parity"));
+		FRDGBuilder Graph(RHICmdList);
+		auto* Deltas = AddSolvePass(Graph, Frame, State, true);
+		AddEnqueueCopyPass(Graph, &Readback, Deltas, 0u);
+		Graph.Execute();
+		RHICmdList.BlockUntilGPUIdle();
+		const uint32 Count = Frame.Points.Num() / PointStride * 3;
+		const void* Data = Readback.Lock(Count * sizeof(FVector4f));
+		if (Data) {
+			Result.SetNumUninitialized(Count);
+			FMemory::Memcpy(Result.GetData(), Data, Count * sizeof(FVector4f));
+			Readback.Unlock();
+		}
+	});
+	FlushRenderingCommands();
+	if (!TestEqual(TEXT("GPU delta count"), Result.Num(), Expected.Num() * 3)) {
+		return false;
+	}
+	double MaxError = 0;
+	for (int32 Index = 0; Index < Expected.Num(); ++Index) {
+		const FVector4f ReferencePosition(FVector3f(Reference[Index]), 1.f);
+		const FVector Position(
+			Dot4(Result[Index * 3], ReferencePosition),
+			Dot4(Result[Index * 3 + 1], ReferencePosition),
+			Dot4(Result[Index * 3 + 2], ReferencePosition)
+		);
+		const double Error = FVector::Distance(Position, Expected[Index]);
+		MaxError = FMath::Max(MaxError, Error);
+		TestTrue(FString::Printf(TEXT("Point %d finite and within 0.03 cm (error %.6f)"), Index, Error), !Position.ContainsNaN() && Error < .03);
+	}
+	AddInfo(FString::Printf(TEXT("GPU/CPU solver max position error: %.6f cm across %d points."), MaxError, Expected.Num()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiGPUPrimitiveTest,
+	"KawaiiPhysicsBaker.GPU.BoxRadiusParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiGPUPrimitiveTest::RunTest(const FString&) {
+	using namespace KawaiiPhysicsGPU;
+	if (!GDynamicRHI || GUsingNullRHI || GMaxRHIFeatureLevel < ERHIFeatureLevel::SM5) {
+		AddWarning(TEXT("GPU parity requires a real SM5 RHI; skipped under NullRHI."));
+		return true;
+	}
+	KawaiiPhysicsGPU::FFrame Frame;
+	Frame.DeltaTime = 1.f / 60.f;
+	Frame.Topology = 123;
+	Frame.ResetSerial = 1;
+	const TArray<TArray<FVector>> Cases = {
+		{{0, 0, 10}, {0, 0, 5}, {0, 0, 0}, {0, 0, -5}},
+		{{-5, 0, 0}, {5, 0, 0}}, // Segment crosses a capsule although its endpoints are outside.
+		{{0, 0, 0}, {0, 0, -4}, {0, 0, -8}}, // Pinned root overlap must remain finite.
+		{{-5, 0, 3}, {-2, 0, 3}, {1, 0, 3}, {4, 0, 3}},
+		{{0, 0, 5}, {0, 0, 5}, {0, 0, 0}} // Zero-length segment.
+	};
+	TArray<KawaiiPhysicsIKCorrection::FCapsule> Capsules = {{FVector(0, -3, 0), FVector(0, 3, 0), 1.5}, {FVector(2, -2, -3), FVector(2, 2, -3), 1.0}};
+	Capsules[0].BoxExtent = FVector(1.5, 3., 2.);
+	Capsules[0].Start = Capsules[0].End = FVector::ZeroVector;
+	Capsules[0].BoxRotation = FRotator(10., 35., 15.).Quaternion();
+	TArray<FVector> Expected;
+	TArray<FVector> Reference;
+	for (const auto& Input : Cases) {
+		FChain Chain;
+		Chain.Range = FUintVector4(Expected.Num(), Input.Num(), Frame.Capsules.Num() / 2, Capsules.Num());
+		Chain.Parameters = FVector4f(0.25f, 1.f, 16.f, 1.f);
+		Chain.AnchorRotation = FVector4f(0, 0, 0, 1);
+		Chain.AnchorPosition = FVector4f(0, 0, 0, 0);
+		Chain.AnchorScale = FVector4f(1, 1, 1, 0);
+		Frame.Chains.Add(Chain);
+		TArray<double> Lengths, Radii;
+		for (int32 Index = 0; Index < Input.Num(); ++Index) {
+			Radii.Add(.05 + .4 * double(Index) / double(Input.Num() - 1));
+			const double Length = Index > 0 ? FVector::Distance(Input[Index - 1], Input[Index]) : 0;
+			if (Index > 0) {
+				Lengths.Add(Length);
+			}
+			Frame.Points.Append(
+				{FVector4f(FVector3f(Input[Index]), Length),
+				 FVector4f(FVector3f(Input[Index]), float(Radii.Last())),
+				 FVector4f(0, 0, 0, 1),
+				 FVector4f(1, 1, 1, 0),
+				 FVector4f(0, 0, 0, 1),
+				 FVector4f(1, 1, 1, 0)}
+			);
+		}
+		for (const auto& Capsule : Capsules) {
+			Frame.Capsules.Add(FVector4f(FVector3f(Capsule.Start), Capsule.Radius));
+			Frame.Capsules.Add(FVector4f(FVector3f(Capsule.End), 0));
+			Frame.ShapeData.Add(FVector4f(Capsule.BoxRotation.X, Capsule.BoxRotation.Y, Capsule.BoxRotation.Z, Capsule.BoxRotation.W));
+			Frame.ShapeData.Add(FVector4f(FVector3f(Capsule.BoxExtent), Capsule.IsBox() ? 1.f : 0.f));
+		}
+		auto CPU = Input;
+		TestTrue(TEXT("CPU reference finite"), KawaiiPhysicsIKCorrection::SolveChain(CPU, Lengths, Input, Capsules, 16, .25, nullptr, nullptr, &Radii).bFinite);
+		Expected.Append(CPU);
+		Reference.Append(Input);
+	}
+	TArray<FVector4f> Result;
+	// Synchronous readback exists only in this automation test. Runtime has no readback or GPU wait.
+	ENQUEUE_RENDER_COMMAND(KawaiiGPUParity)([&Frame, &Result](FRHICommandListImmediate& RHICmdList) {
+		FRenderState State;
+		FRHIGPUBufferReadback Readback(TEXT("KawaiiGPU.Parity"));
+		FRDGBuilder Graph(RHICmdList);
+		auto* Deltas = AddSolvePass(Graph, Frame, State, true);
+		AddEnqueueCopyPass(Graph, &Readback, Deltas, 0u);
+		Graph.Execute();
+		RHICmdList.BlockUntilGPUIdle();
+		const uint32 Count = Frame.Points.Num() / PointStride * 3;
+		const void* Data = Readback.Lock(Count * sizeof(FVector4f));
+		if (Data) {
+			Result.SetNumUninitialized(Count);
+			FMemory::Memcpy(Result.GetData(), Data, Count * sizeof(FVector4f));
+			Readback.Unlock();
+		}
+	});
+	FlushRenderingCommands();
+	if (!TestEqual(TEXT("GPU delta count"), Result.Num(), Expected.Num() * 3)) {
+		return false;
+	}
+	double MaxError = 0;
+	for (int32 Index = 0; Index < Expected.Num(); ++Index) {
+		const FVector4f ReferencePosition(FVector3f(Reference[Index]), 1.f);
+		const FVector Position(
+			Dot4(Result[Index * 3], ReferencePosition),
+			Dot4(Result[Index * 3 + 1], ReferencePosition),
+			Dot4(Result[Index * 3 + 2], ReferencePosition)
+		);
+		const double Error = FVector::Distance(Position, Expected[Index]);
+		MaxError = FMath::Max(MaxError, Error);
+		TestTrue(FString::Printf(TEXT("Point %d finite and within 0.03 cm (error %.6f)"), Index, Error), !Position.ContainsNaN() && Error < .03);
+	}
+	AddInfo(FString::Printf(TEXT("GPU/CPU solver max position error: %.6f cm across %d points."), MaxError, Expected.Num()));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FKawaiiGPUNearlyParallelTest,
 	"KawaiiPhysicsBaker.GPU.NearlyParallelContactParity",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
@@ -328,7 +644,7 @@ bool FKawaiiGPUTemporalTest::RunTest(const FString&) {
 	CPU.PreUpdate(Instance.Get());
 	auto Render = MakeShared<KawaiiPhysicsGPU::FRenderState, ESPMode::ThreadSafe>();
 	double MaxError = 0;
-	for (int32 Step = 0; Step < 48; ++Step) {
+	for (int32 Step = 0; Step < 64; ++Step) {
 		FMemMark Mark(FMemStack::Get());
 		const float Delta = Step == 18 ? .5f : 1.f / 60.f;
 		if (Step == 25) {
@@ -339,6 +655,15 @@ bool FKawaiiGPUTemporalTest::RunTest(const FString&) {
 			// Automatic proxies now fade with their action's original blend weight.
 			CPU.Alpha = .45f * (47 - Step) / 16.f;
 		}
+		if (Step == 48) {
+			CPU.ResetTemporalState();
+			Profile->SmoothingTime = 0.f;
+			Profile->Chains[0].MeshEnvelopeRadius = 2.f;
+			Profile->bUseMeshEnvelope = true;
+			Profile->Chains[0].LimitAngle = 75.f; Profile->Chains[0].MaxBendChange = 20.f;
+			CPU.PreUpdate(Instance.Get());
+		}
+		if (Step >= 48) { CPU.Alpha = 1.f; }
 		FTransform Anchor(FQuat(FVector::ZAxisVector, Step * .04), FVector(Step * .2, Step * -.1, 100));
 		FPoseContext Output(&Proxy);
 		Output.Pose.ResetToRefPose();
@@ -355,6 +680,11 @@ bool FKawaiiGPUTemporalTest::RunTest(const FString&) {
 		Capsule.Start = Anchor.TransformPosition(FVector(0, -20, -15));
 		Capsule.End = Anchor.TransformPosition(FVector(0, 20, -15));
 		Capsule.Radius = 2.f;
+		if (Step >= 48) {
+			const float X = (Step - 48) % 8 < 1 ? -6.f : 6.f;
+			Capsule.Start = Anchor.TransformPosition(FVector(X, -20, -20));
+			Capsule.End = Anchor.TransformPosition(FVector(X, 20, -20));
+		}
 		CPU.ExternalCapsules = {Capsule};
 		CPU.AccumulateDeltaTime(Delta);
 		CPU.CorrectPose(Output, Baked);
@@ -363,21 +693,205 @@ bool FKawaiiGPUTemporalTest::RunTest(const FString&) {
 			const auto& Local = Output.Pose[FCompactPoseBoneIndex(Index)];
 			Expected.Add(Index == 0 ? Local : Local * Expected[Index - 1]);
 		}
+		if (Step == 49) {
+			TestTrue(TEXT("With smoothing disabled, a fast moving proxy cannot tunnel through the free tip"),
+				Anchor.InverseTransformPosition(Expected.Last().GetTranslation()).X > 1.f);
+		}
 		const auto ToGPUQuaternion = [](const FQuat& Rotation) { return FVector4f(Rotation.X, Rotation.Y, Rotation.Z, Rotation.W); };
 		KawaiiPhysicsGPU::FFrame Frame;
 		Frame.DeltaTime = Delta;
 		Frame.SettleTime = Profile->SettleTime;
 		Frame.SmoothingTime = Profile->SmoothingTime;
 		Frame.Topology = 5;
-		Frame.ResetSerial = Step >= 25 ? 2 : 1;
+		Frame.ResetSerial = Step >= 48 ? 3 : (Step >= 25 ? 2 : 1);
 		KawaiiPhysicsGPU::FChain GPUChain;
 		GPUChain.Range = FUintVector4(0, 3, 0, 1);
-		GPUChain.Parameters = FVector4f(Chain.CollisionRadius, CPU.Alpha, Profile->Iterations, 0);
+		GPUChain.Parameters = FVector4f(Profile->bUseMeshEnvelope ? FMath::Max(Chain.CollisionRadius, Profile->Chains[0].MeshEnvelopeRadius) : Chain.CollisionRadius, CPU.Alpha, Profile->Iterations, 0);
 		GPUChain.AnchorRotation = ToGPUQuaternion(Anchor.GetRotation());
 		GPUChain.AnchorPosition = FVector4f(FVector3f(Anchor.GetTranslation()), 0);
 		GPUChain.AnchorScale = FVector4f(1, 1, 1, 0);
 		Frame.Chains = {GPUChain};
 		Frame.Capsules = {FVector4f(FVector3f(Capsule.Start), Capsule.Radius), FVector4f(FVector3f(Capsule.End), 0)};
+		for (int32 Index = 2; Index < 5; ++Index) {
+			const auto& Transform = Reference[Index];
+			Frame.Points.Append(
+				{FVector4f(FVector3f(Transform.GetTranslation()), Index == 2 ? 0.f : 10.f),
+				 FVector4f(FVector3f(Transform.GetTranslation()), 0),
+				 ToGPUQuaternion(Transform.GetRotation()),
+				 FVector4f(1, 1, 1, FMath::DegreesToRadians(Profile->Chains[0].LimitAngle)),
+				 ToGPUQuaternion(Transform.GetRotation()),
+				 FVector4f(1, 1, 1, FMath::DegreesToRadians(Profile->Chains[0].MaxBendChange))}
+			);
+		}
+		TArray<FVector4f> Result;
+		ENQUEUE_RENDER_COMMAND(KawaiiGPUTemporalParity)([&Frame, &Result, Render, Step](FRHICommandListImmediate& RHICmdList) {
+			FRHIGPUBufferReadback Readback(TEXT("KawaiiGPU.TemporalParity"));
+			FRDGBuilder Graph(RHICmdList);
+			auto* Deltas = KawaiiPhysicsGPU::AddSolvePass(Graph, Frame, *Render, Step == 0 || Frame.DeltaTime > .25f);
+			AddEnqueueCopyPass(Graph, &Readback, Deltas, 0u);
+			Graph.Execute();
+			RHICmdList.BlockUntilGPUIdle();
+			const void* Data = Readback.Lock(9 * sizeof(FVector4f));
+			if (Data) {
+				Result.SetNumUninitialized(9);
+				FMemory::Memcpy(Result.GetData(), Data, 9 * sizeof(FVector4f));
+				Readback.Unlock();
+			}
+		});
+		FlushRenderingCommands();
+		if (TestEqual(TEXT("Temporal GPU delta count"), Result.Num(), 9)) {
+			for (int32 Index = 0; Index < 3; ++Index) {
+				const FVector4f ReferencePosition(FVector3f(Reference[Index + 2].GetTranslation()), 1.f);
+				FVector Position(
+					Dot4(Result[Index * 3], ReferencePosition),
+					Dot4(Result[Index * 3 + 1], ReferencePosition),
+					Dot4(Result[Index * 3 + 2], ReferencePosition)
+				);
+				const double Error = FVector::Distance(Position, Expected[Index + 2].GetTranslation());
+				MaxError = FMath::Max(MaxError, Error);
+				TestTrue(FString::Printf(TEXT("Frame %d point %d error %.6f cm"), Step, Index, Error), !Position.ContainsNaN() && Error < .03);
+
+				// Origins alone do not catch a bad rotation/scale matrix that stretches weighted skinning.
+				for (const FVector& LocalOffset : {FVector(3, 0, 0), FVector(0, 4, 0), FVector(0, 0, 5)}) {
+					const FVector4f BaselineVertex(FVector3f(Reference[Index + 2].TransformPosition(LocalOffset)), 1.f);
+					const FVector GPUVertex(
+						Dot4(Result[Index * 3], BaselineVertex),
+						Dot4(Result[Index * 3 + 1], BaselineVertex),
+						Dot4(Result[Index * 3 + 2], BaselineVertex)
+					);
+					const FVector CPUVertex = Expected[Index + 2].TransformPosition(LocalOffset);
+					const double VertexError = FVector::Distance(GPUVertex, CPUVertex);
+					MaxError = FMath::Max(MaxError, VertexError);
+					TestTrue(
+						FString::Printf(TEXT("Frame %d bone %d off-axis skinning error %.6f cm"), Step, Index, VertexError),
+						!GPUVertex.ContainsNaN() && VertexError < .03
+					);
+				}
+			}
+		}
+	}
+	ENQUEUE_RENDER_COMMAND(KawaiiGPUTemporalRelease)([Render](FRHICommandListImmediate&) { Render->History.SafeRelease(); });
+	FlushRenderingCommands();
+	AddInfo(FString::Printf(TEXT("GPU/CPU temporal max error %.6f cm, moving anchor, side history, smoothing, alpha, long gap and reset."), MaxError));
+	return true;
+}
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FKawaiiGPUBoxTemporalTest,
+	"KawaiiPhysicsBaker.GPU.BoxTemporalParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter
+)
+
+bool FKawaiiGPUBoxTemporalTest::RunTest(const FString&) {
+	if (!GDynamicRHI || GUsingNullRHI || GMaxRHIFeatureLevel < ERHIFeatureLevel::SM5) {
+		AddWarning(TEXT("Temporal parity requires a real SM5 RHI."));
+		return true;
+	}
+	TStrongObjectPtr<USkeleton> Skeleton(NewObject<USkeleton>());
+	{
+		FReferenceSkeletonModifier Modifier(Skeleton.Get());
+		Modifier.Add(FMeshBoneInfo(TEXT("root"), TEXT("root"), INDEX_NONE), FTransform::Identity);
+		Modifier.Add(FMeshBoneInfo(TEXT("anchor"), TEXT("anchor"), 0), FTransform(FVector(0, 0, 100)));
+		Modifier.Add(FMeshBoneInfo(TEXT("hair0"), TEXT("hair0"), 1), FTransform::Identity);
+		Modifier.Add(FMeshBoneInfo(TEXT("hair1"), TEXT("hair1"), 2), FTransform(FVector(0, 0, -10)));
+		Modifier.Add(FMeshBoneInfo(TEXT("hair2"), TEXT("hair2"), 3), FTransform(FVector(0, 0, -10)));
+	}
+	TStrongObjectPtr<USkeletalMesh> Mesh(NewObject<USkeletalMesh>());
+	Mesh->SetSkeleton(Skeleton.Get());
+	Mesh->GetRefSkeleton() = Skeleton->GetReferenceSkeleton();
+	TStrongObjectPtr<USkeletalMeshComponent> Component(NewObject<USkeletalMeshComponent>());
+	Component->SetSkeletalMesh(Mesh.Get());
+	TStrongObjectPtr<UAnimInstance> Instance(NewObject<UAnimInstance>(Component.Get()));
+	TArray<FBoneIndexType> Indices{0, 1, 2, 3, 4};
+	const UE::Anim::FCurveFilterSettings Filter(UE::Anim::ECurveFilterMode::None);
+	Instance->GetRequiredBones().InitializeTo(Indices, Filter, *Mesh);
+	FAnimInstanceProxy Proxy(Instance.Get());
+	Proxy.GetRequiredBones().InitializeTo(Indices, Filter, *Mesh);
+	TStrongObjectPtr<UKawaiiPhysicsIKCorrectionProfile> Profile(NewObject<UKawaiiPhysicsIKCorrectionProfile>());
+	FKawaiiPhysicsIKCorrectionChain Chain;
+	Chain.RootBone.BoneName = TEXT("hair0");
+	Chain.TipBone.BoneName = TEXT("hair2");
+	Chain.DriverBone.BoneName = TEXT("root");
+	Chain.DriverWeight = 0;
+	Profile->Chains = {Chain};
+	Profile->Iterations = 32;
+	FAnimNode_KawaiiPhysicsIKCorrection CPU;
+	CPU.Profile = Profile.Get();
+	CPU.PreUpdate(Instance.Get());
+	auto Render = MakeShared<KawaiiPhysicsGPU::FRenderState, ESPMode::ThreadSafe>();
+	double MaxError = 0;
+	for (int32 Step = 0; Step < 64; ++Step) {
+		FMemMark Mark(FMemStack::Get());
+		const float Delta = Step == 18 ? .5f : 1.f / 60.f;
+		if (Step == 25) {
+			CPU.ResetTemporalState();
+		}
+		CPU.Alpha = Step < 24 ? 1.f : .45f;
+		if (Step >= 32) {
+			// Automatic proxies now fade with their action's original blend weight.
+			CPU.Alpha = .45f * (47 - Step) / 16.f;
+		}
+		if (Step == 48) {
+			CPU.ResetTemporalState();
+			Profile->SmoothingTime = 0.f;
+			Profile->Chains[0].MeshEnvelopeRadius = 2.f;
+			Profile->bUseMeshEnvelope = true;
+			Profile->Chains[0].LimitAngle = 75.f; Profile->Chains[0].MaxBendChange = 20.f;
+			CPU.PreUpdate(Instance.Get());
+		}
+		if (Step >= 48) { CPU.Alpha = 1.f; }
+		FTransform Anchor(FQuat(FVector::ZAxisVector, Step * .04), FVector(Step * .2, Step * -.1, 100));
+		FPoseContext Output(&Proxy);
+		Output.Pose.ResetToRefPose();
+		Output.Pose[FCompactPoseBoneIndex(1)] = Anchor;
+		Output.Pose[FCompactPoseBoneIndex(2)].SetRotation(FQuat(FVector::YAxisVector, FMath::DegreesToRadians(FMath::Min(-2.5 + Step, 2.5))));
+		FPoseContext Baked(Output);
+		Baked.Pose.CopyBonesFrom(Output.Pose);
+		TArray<FTransform> Reference;
+		for (int32 Index = 0; Index < 5; ++Index) {
+			const auto& Local = Output.Pose[FCompactPoseBoneIndex(Index)];
+			Reference.Add(Index == 0 ? Local : Local * Reference[Index - 1]);
+		}
+		FKawaiiClothingProxyCapsule Capsule;
+		Capsule.Start = Anchor.TransformPosition(FVector(0, -20, -15));
+		Capsule.End = Anchor.TransformPosition(FVector(0, 20, -15));
+		Capsule.Radius = 2.f;
+		if (Step >= 48) {
+			const float X = (Step - 48) % 8 < 1 ? -6.f : 6.f;
+			Capsule.Start = Anchor.TransformPosition(FVector(X, -20, -20));
+			Capsule.End = Anchor.TransformPosition(FVector(X, 20, -20));
+		}
+		Capsule.Start = (Capsule.Start + Capsule.End) * .5;
+		Capsule.End = Capsule.Start;
+		Capsule.BoxExtent = FVector(2., 20., 2.);
+		Capsule.BoxRotation = (Anchor.GetRotation() * FQuat(FVector::YAxisVector, .15 * FMath::Sin(Step * .3))).GetNormalized();
+		CPU.ExternalCapsules = {Capsule};
+		CPU.AccumulateDeltaTime(Delta);
+		CPU.CorrectPose(Output, Baked);
+		TArray<FTransform> Expected;
+		for (int32 Index = 0; Index < 5; ++Index) {
+			const auto& Local = Output.Pose[FCompactPoseBoneIndex(Index)];
+			Expected.Add(Index == 0 ? Local : Local * Expected[Index - 1]);
+		}
+		if (Step == 49) {
+			TestTrue(TEXT("With smoothing disabled, a fast moving proxy cannot tunnel through the free tip"),
+				Anchor.InverseTransformPosition(Expected.Last().GetTranslation()).X > 1.f);
+		}
+		const auto ToGPUQuaternion = [](const FQuat& Rotation) { return FVector4f(Rotation.X, Rotation.Y, Rotation.Z, Rotation.W); };
+		KawaiiPhysicsGPU::FFrame Frame;
+		Frame.DeltaTime = Delta;
+		Frame.SettleTime = Profile->SettleTime;
+		Frame.SmoothingTime = Profile->SmoothingTime;
+		Frame.Topology = 5;
+		Frame.ResetSerial = Step >= 48 ? 3 : (Step >= 25 ? 2 : 1);
+		KawaiiPhysicsGPU::FChain GPUChain;
+		GPUChain.Range = FUintVector4(0, 3, 0, 1);
+		GPUChain.Parameters = FVector4f(Profile->bUseMeshEnvelope ? FMath::Max(Chain.CollisionRadius, Profile->Chains[0].MeshEnvelopeRadius) : Chain.CollisionRadius, CPU.Alpha, Profile->Iterations, 0);
+		GPUChain.AnchorRotation = ToGPUQuaternion(Anchor.GetRotation());
+		GPUChain.AnchorPosition = FVector4f(FVector3f(Anchor.GetTranslation()), 0);
+		GPUChain.AnchorScale = FVector4f(1, 1, 1, 0);
+		Frame.Chains = {GPUChain};
+		Frame.Capsules = {FVector4f(FVector3f(Capsule.Start), Capsule.Radius), FVector4f(FVector3f(Capsule.End), 0)};
+		Frame.ShapeData = {ToGPUQuaternion(Capsule.BoxRotation), FVector4f(FVector3f(Capsule.BoxExtent), 1.f)};
 		for (int32 Index = 2; Index < 5; ++Index) {
 			const auto& Transform = Reference[Index];
 			Frame.Points.Append(
@@ -391,7 +905,7 @@ bool FKawaiiGPUTemporalTest::RunTest(const FString&) {
 		}
 		TArray<FVector4f> Result;
 		ENQUEUE_RENDER_COMMAND(KawaiiGPUTemporalParity)([&Frame, &Result, Render, Step](FRHICommandListImmediate& RHICmdList) {
-			FRHIGPUBufferReadback Readback(TEXT("KawaiiGPU.TemporalParity"));
+			FRHIGPUBufferReadback Readback(TEXT("KawaiiGPU.BoxTemporalParity"));
 			FRDGBuilder Graph(RHICmdList);
 			auto* Deltas = KawaiiPhysicsGPU::AddSolvePass(Graph, Frame, *Render, Step == 0 || Frame.DeltaTime > .25f);
 			AddEnqueueCopyPass(Graph, &Readback, Deltas, 0u);

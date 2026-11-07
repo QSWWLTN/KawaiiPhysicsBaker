@@ -1,3 +1,6 @@
+#ifndef KAWAII_BRIDGE_REFINE
+#define KAWAII_BRIDGE_REFINE 0
+#endif
 #include "/Engine/Public/Platform.ush"
 
 struct FKawaiiChain
@@ -11,12 +14,22 @@ struct FKawaiiChain
 StructuredBuffer<FKawaiiChain> Chains;
 StructuredBuffer<float4> PointInput;
 StructuredBuffer<float4> Capsules;
+StructuredBuffer<float4> ShapeData;
 RWStructuredBuffer<float4> History;
 RWStructuredBuffer<float4> Deltas;
+RWStructuredBuffer<float4> RawPoints;
+RWStructuredBuffer<float4> BridgePushes;
+uint BridgePointCount;
+StructuredBuffer<uint4> BridgeRanges;
+StructuredBuffer<float4> BridgeParameters;
+StructuredBuffer<uint4> BridgeFlags;
+uint BridgeCount;
 uint ResetHistory;
 uint AdvanceHistory;
 uint UseSideHistory;
 uint UseSmoothing;
+uint CapsuleHistoryOffset;
+uint ShapeHistoryOffset;
 float SettleAlpha;
 float SmoothingAlpha;
 
@@ -26,6 +39,8 @@ groupshared float3 Target[64];
 groupshared float3 Side[64];
 groupshared float3 Original[64];
 groupshared float Rest[64];
+groupshared float ParticleRadius[64];
+groupshared float LimitRadians[64];
 groupshared uint HasHistory;
 groupshared uint Valid;
 
@@ -48,6 +63,110 @@ float3 Closest(float3 V, float3 A, float3 B)
     float S = dot(E, E);
     return A + (S > 1.e-8f ? saturate(dot(V - A, E) / S) : 0.f) * E;
 }
+float4 Between(float3 A, float3 B);
+bool CapsuleRayRange(float3 O, float3 D, float3 A, float3 B, float Radius, out float Enter, out float Exit)
+{
+    Enter = 1.e30f; Exit = -1.e30f;
+    float DD = dot(D, D);
+    if (DD <= 1.e-8f) { return false; }
+    [loop] for (uint i = 0; i < 2; ++i)
+    {
+        float3 M = O - (i == 0 ? A : B);
+        float B0 = dot(M, D), Disc = B0 * B0 - DD * (dot(M, M) - Radius * Radius);
+        if (Disc >= 0.f)
+        {
+            float R = sqrt(Disc);
+            Enter = min(Enter, (-B0 - R) / DD); Exit = max(Exit, (-B0 + R) / DD);
+        }
+    }
+    float3 Edge = B - A;
+    float L = length(Edge);
+    if (L > 1.e-8f)
+    {
+        float3 Axis = Edge / L, M = O - A;
+        float MD = dot(M, Axis), ND = dot(D, Axis);
+        float3 Q = M - Axis * MD, V = D - Axis * ND;
+        float A0 = dot(V, V), B0 = dot(Q, V), Disc = B0 * B0 - A0 * (dot(Q, Q) - Radius * Radius);
+        if (A0 > 1.e-8f && Disc >= 0.f)
+        {
+            float R = sqrt(Disc);
+            [loop] for (uint i = 0; i < 2; ++i)
+            {
+                float T = (-B0 + (i == 0 ? -R : R)) / A0, Along = MD + ND * T;
+                if (Along >= 0.f && Along <= L) { Enter = min(Enter, T); Exit = max(Exit, T); }
+            }
+        }
+    }
+    return Enter <= Exit;
+}
+float3 PreviousSide(FKawaiiChain Chain, uint CapsuleIndex, float3 Previous, float3 A, float3 B)
+{
+    uint Id = CapsuleHistoryOffset + (Chain.Range.z + CapsuleIndex) * 2;
+    float3 OldA = ToWorld(Chain, History[Id].xyz), OldB = ToWorld(Chain, History[Id + 1].xyz);
+    float3 OldAxis = OldB - OldA, NewAxis = B - A;
+    float L2 = dot(OldAxis, OldAxis);
+    float T = L2 > 1.e-8f ? saturate(dot(Previous - OldA, OldAxis) / L2) : 0.f;
+    float4 Q = L2 > 1.e-8f && dot(NewAxis, NewAxis) > 1.e-8f ? Between(OldAxis, NewAxis) : float4(0, 0, 0, 1);
+    return A + T * NewAxis + Rotate(Q, Previous - OldA - T * OldAxis);
+}
+float BoxLocalDistance(float3 V, float3 Extent)
+{
+    float3 D = abs(V) - Extent;
+    return length(max(D, 0.f)) + min(0.f, max(D.x, max(D.y, D.z)));
+}
+float BoxDistance(float3 V, float3 Center, float4 Q, float3 E) { return BoxLocalDistance(Rotate(Conjugate(Q), V - Center), E); }
+float3 BoxPush(float3 V, float3 Center, float4 Q, float3 Extent, float Radius)
+{
+    float3 Local = Rotate(Conjugate(Q), V - Center), ClosestPoint = clamp(Local, -Extent, Extent);
+    float3 Delta = Local - ClosestPoint;
+    float L = length(Delta);
+    if (L > 1.e-8f) { return Rotate(Q, Delta / L * max(0.f, Radius - L)); }
+    float3 Depth = Extent - abs(Local);
+    uint Axis = Depth.x <= Depth.y + 1.e-4f && Depth.x <= Depth.z + 1.e-4f ? 0 : Depth.y <= Depth.z + 1.e-4f ? 1 : 2;
+    float3 Signs = float3(Local.x >= 0.f ? 1.f : -1.f, Local.y >= 0.f ? 1.f : -1.f, Local.z >= 0.f ? 1.f : -1.f);
+    float3 Push = Signs * (Depth + Radius) * float3(Axis == 0 ? 1.f : 0.f, Axis == 1 ? 1.f : 0.f, Axis == 2 ? 1.f : 0.f);
+    return Rotate(Q, Push);
+}
+float BoxSegmentTime(float3 A, float3 B, float3 Center, float4 Q, float3 E, float RA, float RB)
+{
+    float3 LA = Rotate(Conjugate(Q), A - Center), LB = Rotate(Conjugate(Q), B - Center);
+    float3 Bounds = E + max(RA, RB);
+    if (any(min(LA, LB) > Bounds) || any(max(LA, LB) < -Bounds)) { return 0.f; }
+    float Low = 0.f, High = 1.f;
+    [loop] for (uint i = 0; i < 28; ++i)
+    {
+        float L = (Low * 2.f + High) / 3.f, R = (Low + High * 2.f) / 3.f;
+        if (BoxLocalDistance(lerp(LA, LB, L), E) - lerp(RA, RB, L) < BoxLocalDistance(lerp(LA, LB, R), E) - lerp(RA, RB, R)) { High = R; } else { Low = L; }
+    }
+    return (Low + High) * .5f;
+}
+float3 ProjectBoxPoint(float3 V, float3 Center, float4 Q, float3 E, float Radius, float3 Previous, bool UsePrevious)
+{
+    if (UsePrevious && BoxDistance(Previous, Center, Q, E) >= Radius - 1.e-4f)
+    {
+        float T = BoxSegmentTime(Previous, V, Center, Q, E, Radius, Radius);
+        if (BoxDistance(lerp(Previous, V, T), Center, Q, E) < Radius - 1.e-5f)
+        {
+            float Low = 0.f, High = T;
+            [loop] for (uint i = 0; i < 24; ++i)
+            {
+                float M = (Low + High) * .5f;
+                if (BoxDistance(lerp(Previous, V, M), Center, Q, E) < Radius) { High = M; } else { Low = M; }
+            }
+            float3 Hit = lerp(Previous, V, High), N = SafeNormal(BoxPush(Hit, Center, Q, E, Radius + .001f));
+            V += N * max(0.f, dot(Hit - V, N));
+        }
+    }
+    return V + BoxPush(V, Center, Q, E, Radius);
+}
+float DirectedContactDistance(float3 V, float3 N, float3 A, float3 B, float Radius)
+{
+    float3 Delta = V - Closest(V, A, B);
+    float Distance = length(Delta);
+    if (Distance > 1.e-8f && dot(Delta, N) >= Distance * (1.f - 1.e-6f)) { return max(0.f, Radius - Distance); }
+    float Enter, Exit;
+    return CapsuleRayRange(V, N, A, B, Radius, Enter, Exit) ? max(0.f, Exit) : 0.f;
+}
 float3 Perpendicular(float3 Axis)
 {
     float3 N = SafeNormal(Axis);
@@ -59,7 +178,7 @@ float3 Perpendicular(float3 Axis)
 float3 ContactNormal(float3 V, float3 OnCapsule, float3 Reference, float3 A, float3 B, float3 Edge, float3 Previous)
 {
     float3 D = V - OnCapsule;
-    if (HasHistory && UseSideHistory)
+    if (HasHistory)
     {
         float3 S = Previous - Closest(Previous, A, B);
         if (dot(S, S) > 1.e-6f && (dot(D, D) <= 1.e-8f || dot(D, S) < 0.f)) { return SafeNormal(S); }
@@ -146,7 +265,7 @@ void SegmentClosest(float3 A, float3 B, float3 C, float3 D, out float3 OnAB, out
 }
 void Lengths(uint Count, bool Reverse)
 {
-    for (uint Step = 0; Step + 1 < Count; ++Step)
+    [loop] for (uint Step = 0; Step + 1 < Count; ++Step)
     {
         uint A = Reverse ? Count - Step - 2 : Step, B = A + 1;
         float WeightA = A == 0 ? 0.f : 1.f;
@@ -161,18 +280,51 @@ void Lengths(uint Count, bool Reverse)
 }
 void PointContacts(FKawaiiChain Chain)
 {
-    for (uint i = 1; i < Chain.Range.y; ++i)
+    [loop] for (uint i = 1; i < Chain.Range.y; ++i)
     {
-        for (uint c = 0; c < Chain.Range.w; ++c)
+        [loop] for (uint c = 0; c < Chain.Range.w; ++c)
         {
             float4 CA = Capsules[(Chain.Range.z + c) * 2];
             float3 CB = Capsules[(Chain.Range.z + c) * 2 + 1].xyz;
-            float Radius = CA.w + Chain.Parameters.x;
+            float Radius = CA.w + ParticleRadius[i];
+            float3 Previous = Side[i];
+            uint ShapeId = (Chain.Range.z + c) * 2;
+            float4 BoxQ = ShapeData[ShapeId], BoxExtent = ShapeData[ShapeId + 1];
+            if (BoxExtent.w > 0.f)
+            {
+                if (HasHistory)
+                {
+                    float3 OldCenter = ToWorld(Chain, History[CapsuleHistoryOffset + ShapeId].xyz);
+                    float4 OldQ = QMul(Chain.AnchorRotation, History[ShapeHistoryOffset + ShapeId]);
+                    Previous = CA.xyz + Rotate(BoxQ, Rotate(Conjugate(OldQ), Previous - OldCenter));
+                }
+                P[i] = ProjectBoxPoint(P[i], CA.xyz, BoxQ, BoxExtent.xyz, ParticleRadius[i], Previous, HasHistory != 0);
+                continue;
+            }
+            if (HasHistory)
+            {
+                Previous = PreviousSide(Chain, c, Previous, CA.xyz, CB);
+                float3 OldDelta = Previous - Closest(Previous, CA.xyz, CB);
+                float Slop = max(1.e-4f, Radius * 1.e-4f);
+                if (length(OldDelta) >= Radius - Slop
+                    && !any(max(Previous, P[i]) < min(CA.xyz, CB) - Radius)
+                    && !any(min(Previous, P[i]) > max(CA.xyz, CB) + Radius))
+                {
+                    float3 Motion = P[i] - Previous;
+                    float Enter, Exit;
+                    if (CapsuleRayRange(Previous, Motion, CA.xyz, CB, Radius, Enter, Exit) && Enter >= -Slop / max(1.f, length(Motion)) && Enter < 1.f)
+                    {
+                        float3 Hit = Previous + Motion * max(0.f, Enter), N = SafeNormal(Hit - Closest(Hit, CA.xyz, CB));
+                        P[i] += N * max(0.f, dot(Hit - P[i], N));
+                    }
+                }
+            }
             float3 On = Closest(P[i], CA.xyz, CB);
             float D2 = dot(P[i] - On, P[i] - On);
             if (D2 < Radius * Radius)
             {
-                P[i] += ContactNormal(P[i], On, Ref[i], CA.xyz, CB, float3(0, 0, 0), Side[i]) * (Radius - sqrt(D2));
+                float3 N = ContactNormal(P[i], On, Ref[i], CA.xyz, CB, float3(0, 0, 0), Previous);
+                P[i] += N * DirectedContactDistance(P[i], N, CA.xyz, CB, Radius);
             }
         }
     }
@@ -184,14 +336,31 @@ float3 ClampLength(float3 V, float MaxLength)
 }
 void SegmentContacts(FKawaiiChain Chain)
 {
-    for (uint A = 0; A + 1 < Chain.Range.y; ++A)
+    [loop] for (uint A = 0; A + 1 < Chain.Range.y; ++A)
     {
         uint B = A + 1;
-        for (uint c = 0; c < Chain.Range.w; ++c)
+        [loop] for (uint c = 0; c < Chain.Range.w; ++c)
         {
             float4 CA = Capsules[(Chain.Range.z + c) * 2];
             float3 CB = Capsules[(Chain.Range.z + c) * 2 + 1].xyz;
-            float Radius = CA.w + Chain.Parameters.x;
+            float Radius = CA.w + max(ParticleRadius[A], ParticleRadius[B]);
+            uint ShapeId = (Chain.Range.z + c) * 2;
+            float4 BoxQ = ShapeData[ShapeId], BoxExtent = ShapeData[ShapeId + 1];
+            if (BoxExtent.w > 0.f)
+            {
+                if (A == 0 && BoxDistance(P[A], CA.xyz, BoxQ, BoxExtent.xyz) < ParticleRadius[A]) { continue; }
+                float T = BoxSegmentTime(P[A], P[B], CA.xyz, BoxQ, BoxExtent.xyz, ParticleRadius[A], ParticleRadius[B]);
+                float WA = A == 0 ? 0.f : 1.f - T, WB = T, Denom = WA * WA + WB * WB;
+                if (Denom > 1.e-8f)
+                {
+                    float3 Push = BoxPush(lerp(P[A], P[B], T), CA.xyz, BoxQ, BoxExtent.xyz, lerp(ParticleRadius[A], ParticleRadius[B], T)) / Denom;
+                    float MaxPush = 2.f * max(BoxExtent.x, max(BoxExtent.y, BoxExtent.z));
+                    float3 PA = WA * Push, PB = WB * Push;
+                    P[A] += PA * min(1.f, MaxPush / max(1.e-8f, length(PA)));
+                    P[B] += PB * min(1.f, MaxPush / max(1.e-8f, length(PB)));
+                }
+                continue;
+            }
             // Conservative per-pair broad phase, recomputed after every preceding projection.
             if (A == 0)
             {
@@ -211,8 +380,10 @@ void SegmentContacts(FKawaiiChain Chain)
             float MassA = A == 0 ? 0.f : 1.f;
             float W = 1.f - T, Denom = MassA * W * W + T * T;
             if (Denom <= 1.e-8f) { continue; }
-            float3 N = ContactNormal(OnCloth, OnCapsule, lerp(Ref[A], Ref[B], T), CA.xyz, CB, Edge, lerp(Side[A], Side[B], T));
-            float3 Correction = N * ((Radius - sqrt(D2)) / Denom);
+            float3 Previous = lerp(Side[A], Side[B], T);
+            if (HasHistory) { Previous = PreviousSide(Chain, c, Previous, CA.xyz, CB); }
+            float3 N = ContactNormal(OnCloth, OnCapsule, lerp(Ref[A], Ref[B], T), CA.xyz, CB, Edge, Previous);
+            float3 Correction = N * (DirectedContactDistance(OnCloth, N, CA.xyz, CB, Radius) / Denom);
             P[A] += ClampLength(MassA * W * Correction, 2.f * Radius);
             P[B] += ClampLength(T * Correction, 2.f * Radius);
         }
@@ -231,6 +402,60 @@ float3 DeltaVector(float3 V, float4 BaseQ, float3 BaseScale, float4 Q, float3 Sc
 {
     return Rotate(Q, Rotate(Conjugate(BaseQ), V) / BaseScale * Scale);
 }
+void AngularConstraints(FKawaiiChain Chain, uint Count)
+{
+    float BendChange = PointInput[Chain.Range.x * 6 + 5].w;
+    if (BendChange > 0.f) [loop] for (uint i = 1; i + 1 < Count; ++i)
+    {
+        float3 R0 = Target[i]-Target[i-1], R1 = Target[i+1]-Target[i];
+        if (dot(R0,R0) <= 1.e-8f || dot(R1,R1) <= 1.e-8f) { continue; }
+        float3 E0 = P[i]-P[i-1], E1 = P[i+1]-P[i];
+        float A = length(E0), B = length(E1);
+        if (A <= 1.e-4f || B <= 1.e-4f) { continue; }
+        float3 U = E0/A, V = E1/B;
+        float Angle = acos(clamp(dot(SafeNormal(Target[i]-Target[i-1]),SafeNormal(Target[i+1]-Target[i])), -1.f,1.f));
+        float D = clamp(dot(U,V),-1.f,1.f);
+        float Min = cos(min(3.141592653589793f,Angle+BendChange)), Max = cos(max(0.f,Angle-BendChange));
+        float Error = D-clamp(D,Min,Max); if (abs(Error) <= 1.e-7f) { continue; }
+        float3 G0 = -(V-U*D)/A, G2 = (U-V*D)/B, G1 = -G0-G2;
+        float MassA = i == 1 ? 0.f : 1.f, Denom = MassA*dot(G0,G0)+dot(G1,G1)+dot(G2,G2);
+        if (Denom <= 1.e-8f) {
+            float3 Tangent = Target[i+1]-Target[i]; Tangent = SafeNormal(Tangent-U*dot(Tangent,U));
+            if (dot(Tangent,Tangent) < 1.e-8f) { Tangent = Perpendicular(U); }
+            P[i+1] += Tangent*(.01f*min(A,B)); continue;
+        }
+        float Lambda = -Error/Denom, MaxStep = .5f*min(A,B);
+        P[i-1] += ClampLength(G0*(MassA*Lambda),MaxStep);
+        P[i] += ClampLength(G1*Lambda,MaxStep);
+        P[i+1] += ClampLength(G2*Lambda,MaxStep);
+    }
+    [loop] for (uint i = 1; i < Count; ++i)
+    {
+        float Limit = LimitRadians[i]; if (Limit <= 0.f) { continue; }
+        float3 Axis = SafeNormal(Target[i]-Target[i-1]), Edge = P[i]-P[i-1];
+        float L = length(Edge); if (L <= 1.e-4f || dot(Axis,Axis) < 1.e-8f) { continue; }
+        float3 Direction = Edge/L; float D = dot(Axis,Direction);
+        if (D >= cos(Limit)) { continue; }
+        float3 Tangent = SafeNormal(Direction-Axis*D);
+        if (dot(Tangent,Tangent) < 1.e-8f) { Tangent = Perpendicular(Axis); }
+        float3 Clamped = Axis*cos(Limit)+Tangent*sin(Limit);
+        float MassA = i == 1 ? 0.f : 1.f;
+        float3 Push = (Clamped*L-Edge)/(MassA+1.f);
+        P[i-1] -= Push*MassA; P[i] += Push;
+    }
+}
+void SolveContacts(FKawaiiChain Chain, uint Count)
+{
+    [loop] for (uint Iteration = 0; Iteration < uint(KAWAII_BRIDGE_REFINE ? 1 : Chain.Parameters.z); ++Iteration)
+    {
+        Lengths(Count, false); Lengths(Count, true);
+        AngularConstraints(Chain, Count);
+        PointContacts(Chain); SegmentContacts(Chain); PointContacts(Chain);
+        P[0] = Target[0];
+        [loop] for (uint i = 0; i < Count; ++i) { if (!all(isfinite(P[i]))) { Valid = 0; } }
+        if (!Valid) { break; }
+    }
+}
 
 [numthreads(64, 1, 1)]
 void Main(uint3 Group : SV_GroupID, uint Lane : SV_GroupIndex)
@@ -239,7 +464,7 @@ void Main(uint3 Group : SV_GroupID, uint Lane : SV_GroupIndex)
     uint Count = Chain.Range.y, Global = Chain.Range.x + Lane;
     if (Lane == 0)
     {
-        HasHistory = ResetHistory == 0 && History[Chain.Range.x * 2].w > 0.f;
+        HasHistory = !KAWAII_BRIDGE_REFINE && ResetHistory == 0 && History[Chain.Range.x * 2].w > 0.f;
         Valid = 1;
     }
     GroupMemoryBarrierWithGroupSync();
@@ -249,8 +474,13 @@ void Main(uint3 Group : SV_GroupID, uint Lane : SV_GroupIndex)
         Target[Lane] = Input.xyz;
         Ref[Lane] = PointInput[Global * 6 + 1].xyz;
         Rest[Lane] = Input.w;
+        ParticleRadius[Lane] = Chain.Parameters.w > 0.f ? PointInput[Global * 6 + 1].w : Chain.Parameters.x;
+        LimitRadians[Lane] = PointInput[Global * 6 + 3].w;
         Side[Lane] = HasHistory ? ToWorld(Chain, History[Global * 2].xyz) : Target[Lane];
         P[Lane] = Lane > 0 && HasHistory && UseSideHistory ? lerp(Side[Lane], Target[Lane], SettleAlpha) : Target[Lane];
+        #if KAWAII_BRIDGE_REFINE
+        P[Lane] = RawPoints[Global].xyz;
+#endif
         Original[Lane] = P[Lane];
     }
     GroupMemoryBarrierWithGroupSync();
@@ -258,21 +488,11 @@ void Main(uint3 Group : SV_GroupID, uint Lane : SV_GroupIndex)
     // Independent chains run in independent groups. Vertex skinning is fully parallel below.
     if (Lane == 0)
     {
-        for (uint Iteration = 0; Iteration < uint(Chain.Parameters.z); ++Iteration)
-        {
-            Lengths(Count, false);
-            Lengths(Count, true);
-            PointContacts(Chain);
-            SegmentContacts(Chain);
-            PointContacts(Chain);
-            P[0] = Target[0];
-            for (uint i = 0; i < Count; ++i) { if (!all(isfinite(P[i]))) { Valid = 0; } }
-            if (!Valid) { break; }
-        }
+        SolveContacts(Chain, Count);
         if (!Valid) { for (uint i = 0; i < Count; ++i) { P[i] = Original[i]; } }
         if (AdvanceHistory)
         {
-            for (uint i = 0; i < Count; ++i)
+            [loop] for (uint i = 0; i < Count; ++i)
             {
                 uint Id = Chain.Range.x + i;
                 History[Id * 2] = float4(ToLocal(Chain, P[i]), float(Valid));
@@ -283,18 +503,36 @@ void Main(uint3 Group : SV_GroupID, uint Lane : SV_GroupIndex)
             }
             if (HasHistory && UseSmoothing)
             {
-                for (uint i = 1; i < Count; ++i)
+                [loop] for (uint i = 1; i < Count; ++i)
                 {
                     float3 D = SafeNormal(P[i] - P[i - 1]);
                     if (dot(D, D) < 1.e-8f) { D = SafeNormal(Target[i] - Target[i - 1]); }
                     if (dot(D, D) > 1.e-8f) { P[i] = P[i - 1] + D * Rest[i]; }
                 }
+                SolveContacts(Chain, Count);
+                [loop] for (uint i = 0; i < Count; ++i)
+                {
+                    uint Id = Chain.Range.x + i;
+                    History[Id * 2] = float4(ToLocal(Chain, P[i]), float(Valid));
+                    History[Id * 2 + 1] = float4(Rotate(Conjugate(Chain.AnchorRotation), P[i] - Target[i]) / Chain.AnchorScale.xyz, 0);
+                }
+            }
+            // Capsule history belongs to this chain's anchor frame, just like its solved points.
+            [loop] for (uint c = 0; c < Chain.Range.w; ++c)
+            {
+                uint Id = (Chain.Range.z + c) * 2;
+                float4 CA = Capsules[Id], CB = Capsules[Id + 1];
+                History[CapsuleHistoryOffset + Id] = float4(ToLocal(Chain, CA.xyz), CA.w);
+                History[CapsuleHistoryOffset + Id + 1] = float4(ToLocal(Chain, CB.xyz), 0);
+                History[ShapeHistoryOffset + Id] = QMul(Conjugate(Chain.AnchorRotation), ShapeData[Id]);
+                History[ShapeHistoryOffset + Id + 1] = ShapeData[Id + 1];
             }
         }
     }
     GroupMemoryBarrierWithGroupSync();
     if (Lane < Count)
     {
+        RawPoints[Global] = float4(P[Lane], float(Valid));
         uint A = min(Lane, Count - 2);
         float4 Swing = Between(Target[A + 1] - Target[A], P[A + 1] - P[A]);
         float4 BaseQ = PointInput[Global * 6 + 2];
@@ -311,5 +549,56 @@ void Main(uint3 Group : SV_GroupID, uint Lane : SV_GroupIndex)
         Deltas[Global * 3] = float4(X.x, Y.x, Z.x, T.x);
         Deltas[Global * 3 + 1] = float4(X.y, Y.y, Z.y, T.y);
         Deltas[Global * 3 + 2] = float4(X.z, Y.z, Z.z, T.z);
+    }
+}
+
+// Match native bridge dummies: accumulate all contacts before moving any shared endpoint.
+// Chain projections and skinning remain parallel in separate dispatches; there is no CPU readback.
+[numthreads(1, 1, 1)]
+void BridgesMain(uint3 Id : SV_DispatchThreadID)
+{
+    [loop] for (uint Pid = 0; Pid < BridgePointCount; ++Pid) { BridgePushes[Pid] = 0.f; }
+    [loop] for (uint Index = 0; Index < BridgeCount; ++Index)
+    {
+        uint4 Link = BridgeRanges[Index], Fixed = BridgeFlags[Index];
+        float4 Settings = BridgeParameters[Index];
+        float3 RefSpan = PointInput[Link.x * 6 + 1].xyz - PointInput[Link.y * 6 + 1].xyz;
+        if (Settings.z <= 0.f || dot(RefSpan, RefSpan) <= (Settings.x + Settings.y) * (Settings.x + Settings.y)) { continue; }
+        float3 A = RawPoints[Link.x].xyz, B = RawPoints[Link.y].xyz;
+        [loop] for (uint Sample = 1; Sample <= uint(Settings.w); ++Sample)
+        {
+            float T = float(Sample) / (Settings.w + 1.f), Radius = lerp(Settings.x, Settings.y, T);
+            float3 OriginalPoint = lerp(A, B, T), V = OriginalPoint;
+            [loop] for (uint C = 0; C < Link.w; ++C)
+            {
+                uint Shape = (Link.z + C) * 2;
+                float4 CA = Capsules[Shape], CB = Capsules[Shape + 1];
+                if (ShapeData[Shape + 1].w > 0.f) { V += BoxPush(V, CA.xyz, ShapeData[Shape], ShapeData[Shape + 1].xyz, Radius); }
+                else
+                {
+                    float3 D = V - Closest(V, CA.xyz, CB.xyz);
+                    float Distance = length(D), Depth = CA.w + Radius - Distance;
+                    if (Depth > 0.f)
+                    {
+                        if (Distance > 1.e-8f) { D /= Distance; }
+                        else
+                        {
+                            float3 R = lerp(PointInput[Link.x * 6 + 1].xyz, PointInput[Link.y * 6 + 1].xyz, T);
+                            D = SafeNormal(R - Closest(R, CA.xyz, CB.xyz));
+                            if (dot(D, D) < 1.e-8f) { D = Perpendicular(CB.xyz - CA.xyz); }
+                        }
+                        V += D * Depth;
+                    }
+                }
+            }
+            float3 Push = V - OriginalPoint;
+            if (dot(Push, Push) <= 1.e-12f) { continue; }
+            if (!Fixed.x) { BridgePushes[Link.x] += float4(Push * ((1.f - T) * Settings.z), 1.f - T); }
+            if (!Fixed.y) { BridgePushes[Link.y] += float4(Push * (T * Settings.z), T); }
+        }
+    }
+    [loop] for (uint Pid = 0; Pid < BridgePointCount; ++Pid) {
+        float4 Push = BridgePushes[Pid];
+        RawPoints[Pid] = float4(RawPoints[Pid].xyz + Push.xyz / max(1.f, Push.w), RawPoints[Pid].w);
     }
 }

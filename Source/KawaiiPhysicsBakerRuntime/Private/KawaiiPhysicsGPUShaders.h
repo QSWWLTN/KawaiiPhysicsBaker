@@ -12,20 +12,41 @@ class FKawaiiCorrectionSolveCS : public FGlobalShader
 {
 	DECLARE_GLOBAL_SHADER(FKawaiiCorrectionSolveCS);
 	SHADER_USE_PARAMETER_STRUCT(FKawaiiCorrectionSolveCS, FGlobalShader);
+	class FRefine : SHADER_PERMUTATION_BOOL("KAWAII_BRIDGE_REFINE");
+	using FPermutationDomain = TShaderPermutationDomain<FRefine>;
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
+		SHADER_PARAMETER(uint32, BridgeCount)
+		SHADER_PARAMETER(uint32, BridgePointCount)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float4>, BridgePushes)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint4>, BridgeRanges)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, BridgeParameters)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<uint4>, BridgeFlags)
+		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float4>, RawPoints)
 		SHADER_PARAMETER(uint32, ResetHistory)
 		SHADER_PARAMETER(uint32, AdvanceHistory)
 		SHADER_PARAMETER(uint32, UseSideHistory)
 		SHADER_PARAMETER(uint32, UseSmoothing)
+		SHADER_PARAMETER(uint32, CapsuleHistoryOffset)
+		SHADER_PARAMETER(uint32, ShapeHistoryOffset)
 		SHADER_PARAMETER(float, SettleAlpha)
 		SHADER_PARAMETER(float, SmoothingAlpha)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<FKawaiiChain>, Chains)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, PointInput)
 		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, Capsules)
+		SHADER_PARAMETER_RDG_BUFFER_SRV(StructuredBuffer<float4>, ShapeData)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float4>, History)
 		SHADER_PARAMETER_RDG_BUFFER_UAV(RWStructuredBuffer<float4>, Deltas)
 	END_SHADER_PARAMETER_STRUCT()
 
+	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) {
+		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
+	}
+};
+
+class FKawaiiCorrectionBridgeCS : public FGlobalShader {
+	DECLARE_GLOBAL_SHADER(FKawaiiCorrectionBridgeCS);
+	SHADER_USE_PARAMETER_STRUCT(FKawaiiCorrectionBridgeCS, FGlobalShader);
+	using FParameters = FKawaiiCorrectionSolveCS::FParameters;
 	static bool ShouldCompilePermutation(const FGlobalShaderPermutationParameters& Parameters) {
 		return IsFeatureLevelSupported(Parameters.Platform, ERHIFeatureLevel::SM5);
 	}
@@ -75,6 +96,7 @@ namespace KawaiiPhysicsGPU {
 		TRefCountPtr<FRDGPooledBuffer> History;
 		TRefCountPtr<FRDGPooledBuffer> CorrectionDeltas;
 		uint32 PointCount = 0;
+		uint32 CapsuleVectorCount = 0;
 		uint32 Topology = 0;
 		uint32 ResetSerial = 0;
 		uint64 Sequence = 0;

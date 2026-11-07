@@ -10,6 +10,8 @@
 #include "Kismet2/BlueprintEditorUtils.h"
 
 #include "KawaiiPhysicsIKProfileGenerator.h"
+#include "KawaiiPhysicsIKMeshEnvelope.h"
+#include "Engine/SkeletalMesh.h"
 
 namespace {
 	UEdGraphPin* FindComponentPosePin(UEdGraphNode* Node, EEdGraphPinDirection Direction) {
@@ -20,6 +22,24 @@ namespace {
 		}
 		return nullptr;
 	}
+}
+
+bool UKawaiiPhysicsIKEditorLibrary::RefreshIKMeshEnvelopes(UKawaiiPhysicsIKCorrectionProfile* Profile, USkeletalMesh* Mesh, FString& Report) {
+	if (!Profile || !Mesh) { Report = TEXT("Profile and mesh are required"); return false; }
+	TArray<float> Radii;
+	if (!KawaiiPhysicsIKMeshEnvelope::Measure(*Mesh, Profile->Chains, Radii, Report)) { return false; }
+	Profile->Modify();
+	TArray<FString> Lines;
+	for (int32 C = 0; C < Radii.Num(); ++C) {
+		auto& Chain = Profile->Chains[C];
+		Chain.MeshEnvelopeRadius = Radii[C];
+		Lines.Add(FString::Printf(TEXT("%s: authored %.3f, mesh envelope %.3f cm"), *Chain.RootBone.BoneName.ToString(), Chain.CollisionRadius, Radii[C]));
+	}
+	Profile->MeshEnvelopeSource = Mesh;
+	Profile->PostEditChange();
+	Profile->MarkPackageDirty();
+	Report = FString::Join(Lines, TEXT("\n"));
+	return true;
 }
 
 bool UKawaiiPhysicsIKEditorLibrary::BindUseCachedPose(UEdGraphNode* UseNode, UEdGraphNode* SaveNode) {

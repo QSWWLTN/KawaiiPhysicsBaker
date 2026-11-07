@@ -35,6 +35,7 @@ private:
 	void SetDefinition(UKawaiiClothingProxyAsset* Asset);
 	void RefreshMesh();
 	void PropertiesChanged(const FPropertyChangedEvent& Event);
+	void GizmoEdited();
 	bool ValidateDefinition(FString& Error) const;
 	FName MakeShapeId(const FString& Prefix) const;
 	FReply CreateDefinition();

@@ -23,9 +23,16 @@ namespace KawaiiPhysicsGPU {
 	struct FFrame
 	{
 		TArray<FChain> Chains;
-		// target/rest length, reference, baseline quaternion/scale, warped quaternion/scale
+		// target/rest length, reference/radius, baseline quaternion, baseline scale/angle limit radians,
+		// warped quaternion, warped scale/max bend change radians. Zero angle values disable constraints.
 		TArray<FVector4f> Points;
 		TArray<FVector4f> Capsules; // start/radius, end
+		TArray<FVector4f> ShapeData; // optional box rotation, extent/type, two vectors per collider
+		// Three vectors per bridge: point A/B and shape range (uint4), radius A/B, feedback, samples, fixed A/B flags (uint4).
+		TArray<FUintVector4> BridgeRanges;
+		TArray<FVector4f> BridgeParameters;
+		TArray<FUintVector4> BridgeFlags;
+		int32 BridgeIterations = 4;
 		TArray<int32> BoneToPoint; // mesh reference skeleton index -> nearest corrected ancestor
 		TArray<int32> PointBones; // exact mesh bone for each solver point, used to validate the final pose
 		uint32 Topology = 0;

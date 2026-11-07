@@ -29,12 +29,14 @@
 #include "ProfilingDebugging/CountersTrace.h"
 #include "ProfilingDebugging/MiscTrace.h"
 #include "ScopedTransaction.h"
+#include "SceneManagement.h"
 #include "UObject/MetaData.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
 #include "UObject/UnrealType.h"
 
 #include "KawaiiClothingProxyAsset.h"
+#include "KawaiiClothingProxyEditorGeometry.h"
 #include "KawaiiClothingProxyMotion.h"
 #include "KawaiiClothingProxyPlayback.h"
 #include "KawaiiPhysicsBakeSampling.h"
@@ -45,6 +47,7 @@
 #include "KawaiiPhysicsBakeAnimInstance.h"
 #include "AnimNode_KawaiiPhysicsBakeSource.h"
 #include "KawaiiPhysicsBakeBodyCollision.h"
+#include "KawaiiPhysicsIKCorrectionProfile.h"
 
 #define LOCTEXT_NAMESPACE "KawaiiPhysicsBakeSession"
 
@@ -69,6 +72,7 @@ struct FKawaiiPhysicsBakeSession::FPart
 	FGuid InputDataGuid;
 	float InputLength = 0.f;
 	bool bInputDataChanged = false;
+	bool bPlaybackOnly = false;
 	TObjectPtr<USkeletalMeshComponent> Component = nullptr;
 	int32 CopySourceIndex = INDEX_NONE;
 	bool bCollideWithMainProxy = false;
@@ -88,6 +92,12 @@ struct FKawaiiPhysicsBakeSession::FPart
 };
 
 namespace {
+	bool MatchesExportAction(const UKawaiiClothingProxyMotion& Motion, const UKawaiiPhysicsBakeSettings& Settings) {
+		const FSoftObjectPath Action(Settings.SourceAnimation.Get());
+		return Motion.SourceAnimation.ToSoftObjectPath() == Action
+			|| (Settings.ExistingBakedBodyAnimation && Motion.BodyBakedAnimation.ToSoftObjectPath() == Action);
+	}
+
 	uint32 ReadProxyMotionSetSignature(const UKawaiiClothingProxyMotionSet* Set) {
 		uint32 Hash = 0;
 		if (Set) {
@@ -95,6 +105,7 @@ namespace {
 				Hash = FCrc::StrCrc32(*GetPathNameSafe(Motion), Hash);
 				if (Motion) {
 					Hash = FCrc::StrCrc32(*Motion->SourceAnimation.ToSoftObjectPath().ToString(), Hash);
+					Hash = FCrc::StrCrc32(*Motion->BodyBakedAnimation.ToSoftObjectPath().ToString(), Hash);
 					Hash = FCrc::StrCrc32(*GetPathNameSafe(Motion->Definition), Hash);
 					Hash = FCrc::StrCrc32(*Motion->DefinitionSignature, Hash);
 					Hash = FCrc::StrCrc32(*Motion->SourceMesh.ToSoftObjectPath().ToString(), Hash);
@@ -254,11 +265,21 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 	ClearScene();
 	OutError.Reset();
 	UKawaiiPhysicsBakeSettings* SourceSettings = Blueprint ? KawaiiPhysicsBake::GetSettings(Blueprint) : nullptr;
-	if (!SourceSettings || !SourceSettings->MainMesh || !SourceSettings->SourceAnimation) {
-		OutError = TEXT("请在烘焙设置中选择主骨骼网格体和源动画。");
+	if (!SourceSettings || !SourceSettings->MainMesh || !SourceSettings->MainMesh->GetSkeleton()
+		|| (!SourceSettings->SourceAnimation && !SourceSettings->ExistingBakedBodyAnimation)) {
+		OutError = TEXT("请选择带有骨架的主骨骼网格体，以及源动画或已烘焙人物动画。");
 		return false;
 	}
 	Settings = DuplicateObject<UKawaiiPhysicsBakeSettings>(SourceSettings, GetTransientPackage());
+	// Resolve the effective playback and export policy once in the private session snapshot.
+	if (Settings->ExistingBakedBodyAnimation) {
+		Settings->SourceAnimation = Settings->ExistingBakedBodyAnimation;
+		Settings->bReplaceSourceAnimation = false;
+		if (bForBake && Settings->Parts.IsEmpty()) {
+			OutError = TEXT("复用已烘焙人物动画时，请至少添加一个需要导出的附加部件。");
+			return false;
+		}
+	}
 	// This world belongs only to the tool. Reset its clocks without touching engine/global time.
 	GetWorld()->TimeSeconds = 0.0;
 	GetWorld()->UnpausedTimeSeconds = 0.0;
@@ -285,11 +306,12 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 	TUniquePtr<FPart> Main = MakeUnique<FPart>();
 	Main->Name = TEXT("Main");
 	Main->Mesh = Settings->MainMesh;
-	Main->Graph = Blueprint;
+	Main->bPlaybackOnly = Settings->ExistingBakedBodyAnimation != nullptr;
+	Main->Graph = Main->bPlaybackOnly ? nullptr : Blueprint.Get();
 	Main->Animation = Settings->SourceAnimation;
 	Main->RelativeTransform = FTransform::Identity;
 	Main->ProxyDefinition = Settings->ProxyDefinition;
-	Main->ProxyMotionSet = Settings->ProxyMotionSet;
+	Main->ProxyMotionSet = Main->bPlaybackOnly ? nullptr : Settings->ProxyMotionSet.Get();
 	Parts.Add(MoveTemp(Main));
 	TMap<FName, int32> Indices;
 	Indices.Add(TEXT("Main"), 0);
@@ -325,7 +347,8 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 	int64 TotalProxyBones = 0;
 	TSet<UKawaiiClothingProxyMotionSet*> UsedProxySets;
 	for (const TUniquePtr<FPart>& Part : Parts) {
-		if (!ValidateGraph(Part->Graph, Part->Mesh, OutError) || !ValidateAnimation(Part->Animation, Part->Mesh, SourceLength, OutError)) {
+		if ((!Part->bPlaybackOnly && !ValidateGraph(Part->Graph, Part->Mesh, OutError))
+			|| !ValidateAnimation(Part->Animation, Part->Mesh, SourceLength, OutError)) {
 			OutError = Part->Name.ToString() + TEXT(": ") + OutError;
 			return false;
 		}
@@ -338,7 +361,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 			OutError = Part->Name.ToString() + TEXT("：网格体没有真实骨骼。");
 			return false;
 		}
-		Part->CompiledClass = Part->Graph->GeneratedClass;
+		Part->CompiledClass = Part->bPlaybackOnly ? UKawaiiBakedBodyPlaybackInstance::StaticClass() : Part->Graph->GeneratedClass.Get();
 		if (Part->Animation) {
 			IAnimationDataModel* Model = Part->Animation->GetDataModel();
 			if (!Model) {
@@ -361,8 +384,12 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 			}
 			);
 		}
-		Part->Tracks.SetNum(NumBones);
-		TotalBones += NumBones;
+		if (!Part->bPlaybackOnly) {
+			Part->Tracks.SetNum(NumBones);
+		}
+		if (!bForBake || !Part->bPlaybackOnly) {
+			TotalBones += NumBones;
+		}
 		if (Part->ProxyMotionSet && !Part->ProxyDefinition) {
 			OutError = Part->Name.ToString() + TEXT("：指定代理动作集合时，还需要指定衣物代理定义。");
 			return false;
@@ -404,6 +431,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 				}
 				UsedProxySets.Add(Part->ProxyMotionSet);
 				TSet<FSoftObjectPath> SourcePaths;
+				bool bFoundAction = false;
 				for (const UKawaiiClothingProxyMotion* ExistingMotion : Part->ProxyMotionSet->Motions) {
 					if (!ExistingMotion || ExistingMotion->SourceAnimation.IsNull() || SourcePaths.Contains(ExistingMotion->SourceAnimation.ToSoftObjectPath())
 						|| ExistingMotion->Definition != Part->ProxyDefinition
@@ -414,6 +442,13 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 						return false;
 					}
 					SourcePaths.Add(ExistingMotion->SourceAnimation.ToSoftObjectPath());
+					if (MatchesExportAction(*ExistingMotion, *Settings)) {
+						if (bFoundAction) {
+							OutError = Part->Name.ToString() + TEXT("：集合中有多个条目匹配所选人物动画，请先移除重复映射。");
+							return false;
+						}
+						bFoundAction = true;
+					}
 				}
 				// Old motion signatures may be stale after editing the definition. Allow
 				// actions to be rebaked one at a time; runtime rejects each stale action.
@@ -427,7 +462,7 @@ bool FKawaiiPhysicsBakeSession::Prepare(FString& OutError, bool bForBake) {
 	}
 	// The mode is explicit: StartBake must not inherit a bridge or cached pose from preview.
 	const bool bUsePreviewProxy = !bForBake && Settings->bPreviewClothingProxyCollision;
-	const bool bUseLegacyCollision = Settings->bEnableClothingCollision;
+	const bool bUseLegacyCollision = Settings->bEnableClothingCollision && !Settings->ExistingBakedBodyAnimation;
 	int32 CollisionSourceIndex = INDEX_NONE;
 	if (bUsePreviewProxy || bUseLegacyCollision) {
 		const int32* SourceIndex = Indices.Find(Settings->CollisionSourcePart);
@@ -657,7 +692,8 @@ bool FKawaiiPhysicsBakeSession::ValidateInputs(FString& OutError) const {
 			OutError = Part->Name.ToString() + TEXT("：采样期间源动画已被修改，请重新开始预览或烘焙。本次结果未保存。");
 			return false;
 		}
-		if (Part->Graph->GeneratedClass != Part->CompiledClass || (Part->Graph->Status != BS_UpToDate && Part->Graph->Status != BS_UpToDateWithWarnings)) {
+		if (!Part->bPlaybackOnly && (Part->Graph->GeneratedClass != Part->CompiledClass
+			|| (Part->Graph->Status != BS_UpToDate && Part->Graph->Status != BS_UpToDateWithWarnings))) {
 			OutError = TEXT("采样期间烘焙动画图已发生变化，请重新编译并开始预览或烘焙。");
 			return false;
 		}
@@ -869,6 +905,9 @@ void FKawaiiPhysicsBakeSession::TickPreview(float DeltaSeconds) {
 bool FKawaiiPhysicsBakeSession::Capture(FString& OutError) {
 	TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Bake_CaptureTracks);
 	for (const TUniquePtr<FPart>& Part : Parts) {
+		if (Part->bPlaybackOnly) {
+			continue;
+		}
 		const FReferenceSkeleton& Ref = Part->Mesh->GetRefSkeleton();
 		const TArray<FTransform>& ComponentPose = Part->Component->GetComponentSpaceTransforms();
 		if (ComponentPose.Num() < Ref.GetRawBoneNum()) {
@@ -962,7 +1001,9 @@ void FKawaiiPhysicsBakeSession::Tick(float DeltaSeconds) {
 				SampleIndex,
 				Settings->SampleRate
 			);
-			if (Settings->bReplaceSourceAnimation) {
+			if (Settings->ExistingBakedBodyAnimation) {
+				Status = FText::Format(LOCTEXT("ReusedBody", "已保存衣物烘焙结果，人物使用已有序列 {0}。"), FText::FromString(Settings->SourceAnimation->GetName()));
+			} else if (Settings->bReplaceSourceAnimation) {
 				Status = FText::Format(
 					LOCTEXT("ReplacedSource", "烘焙完成，已替换源动画 {0}，名称和引用保持不变。源备份、独立衣物动画及代理结果已保存，可点击“定位结果”查看。"),
 					FText::FromString(Settings->SourceAnimation->GetName())
@@ -984,8 +1025,15 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 	TArray<FString> PackageNames;
 	TArray<FString> ProxyPackageNames;
 	TArray<FString> ProxySetPackageNames;
+	PackageNames.SetNum(Parts.Num());
+	ProxyPackageNames.SetNum(Parts.Num());
+	ProxySetPackageNames.SetNum(Parts.Num());
 	TSet<FString> ReservedPackageNames;
-	for (const TUniquePtr<FPart>& Part : Parts) {
+	for (int32 Index = 0; Index < Parts.Num(); ++Index) {
+		const TUniquePtr<FPart>& Part = Parts[Index];
+		if (Part->bPlaybackOnly) {
+			continue;
+		}
 		const FString Name = ObjectTools::SanitizeObjectName(
 			Settings->OutputPrefix + TEXT("_") + Settings->SourceAnimation->GetName() + TEXT("_") + Part->Name.ToString() + TEXT("_") + Group.Left(8)
 		);
@@ -994,17 +1042,15 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 			OutError = TEXT("输出名称已存在，请重新开始烘焙。已有资产未被覆盖。");
 			return false;
 		}
-		PackageNames.Add(PackageName);
+		PackageNames[Index] = PackageName;
 		ReservedPackageNames.Add(PackageName);
-		ProxyPackageNames.Add(FString());
-		ProxySetPackageNames.Add(FString());
 		if (Part->ProxyDefinition) {
 			const FString ProxyPackageName = PackageName + TEXT("_ProxyMotion");
 			if (FindPackage(nullptr, *ProxyPackageName) || FPackageName::DoesPackageExist(ProxyPackageName) || ReservedPackageNames.Contains(ProxyPackageName)) {
 				OutError = TEXT("代理运动输出名称已存在，请重新开始烘焙。已有资产未被覆盖。");
 				return false;
 			}
-			ProxyPackageNames.Last() = ProxyPackageName;
+			ProxyPackageNames[Index] = ProxyPackageName;
 			ReservedPackageNames.Add(ProxyPackageName);
 			if (!Part->ProxyMotionSet) {
 				const FString ProxySetPackageName = PackageName + TEXT("_ProxySet");
@@ -1014,7 +1060,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 					OutError = TEXT("代理动作集合输出名称已存在，请重新开始烘焙。已有资产未被覆盖。");
 					return false;
 				}
-				ProxySetPackageNames.Last() = ProxySetPackageName;
+				ProxySetPackageNames[Index] = ProxySetPackageName;
 				ReservedPackageNames.Add(ProxySetPackageName);
 			}
 		}
@@ -1093,8 +1139,13 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 	}
 	// Asset creation is deliberately deferred until every component has a complete validated take.
 	TArray<UAnimSequence*> Sequences;
+	Sequences.SetNumZeroed(Parts.Num());
 	for (int32 Index = 0; Index < Parts.Num(); ++Index) {
 		FPart& Part = *Parts[Index];
+		if (Part.bPlaybackOnly) {
+			Sequences[Index] = Part.Animation.Get();
+			continue;
+		}
 		const bool bReplaceMain = Settings->bReplaceSourceAnimation && Index == 0;
 		UAnimSequence* Sequence = nullptr;
 		{
@@ -1113,7 +1164,7 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 				OutputAssets.Add(Sequence);
 			}
 			CreatedAssets.Add(Sequence);
-			Sequences.Add(Sequence);
+			Sequences[Index] = Sequence;
 			Sequence->SetSkeleton(Part.Mesh->GetSkeleton());
 			Sequence->SetPreviewMesh(Part.Mesh, false);
 			// Captured keys are already evaluated on this mesh. Recording its reference
@@ -1270,8 +1321,8 @@ bool FKawaiiPhysicsBakeSession::WriteAssets(FString& OutError) {
 				FAssetRegistryModule::AssetCreated(Set);
 			}
 			Set->Modify();
-			TObjectPtr<UKawaiiClothingProxyMotion>* Existing = Set->Motions.FindByPredicate([Motion](const TObjectPtr<UKawaiiClothingProxyMotion>& Entry) {
-				return Entry && Entry->SourceAnimation.ToSoftObjectPath() == Motion->SourceAnimation.ToSoftObjectPath();
+			TObjectPtr<UKawaiiClothingProxyMotion>* Existing = Set->Motions.FindByPredicate([this](const TObjectPtr<UKawaiiClothingProxyMotion>& Entry) {
+				return Entry && MatchesExportAction(*Entry, *Settings);
 			});
 			if (Existing) {
 				*Existing = Motion;
@@ -1376,6 +1427,64 @@ UWorld* FKawaiiPhysicsBakeSession::GetWorld() const {
 
 FPreviewScene* FKawaiiPhysicsBakeSession::GetPreviewScene() const {
 	return PreviewScene.Get();
+}
+
+void FKawaiiPhysicsBakeSession::DrawClothingProxies(FPrimitiveDrawInterface* PDI) const {
+	int32 ColorIndex = 0;
+	for (const TUniquePtr<FPart>& Part : Parts) {
+		if (!Part->ProxyDefinition || !Part->Component || !Part->Mesh) {
+			continue;
+		}
+		for (const FKawaiiClothingProxyShape& Shape : Part->ProxyDefinition->Shapes) {
+			KawaiiClothingProxyEditor::FGeometry Geometry;
+			const FLinearColor Color = FLinearColor::MakeFromHSV8(static_cast<uint8>((ColorIndex++ * 43) % 255), 190, 255);
+			if (KawaiiClothingProxyEditor::ResolveGeometry(Shape, Part->Mesh->GetRefSkeleton(),
+				Part->Component->GetComponentSpaceTransforms(), Part->Component->GetComponentTransform(), Geometry)) {
+				KawaiiClothingProxyEditor::Draw(PDI, Geometry, Color);
+			}
+		}
+	}
+}
+
+void FKawaiiPhysicsBakeSession::DrawPreviewBones(FPrimitiveDrawInterface* PDI) const {
+	const USkeletalMeshComponent* Main = GetMainComponent();
+	const USkeletalMesh* Mesh = Main ? Main->GetSkeletalMeshAsset() : nullptr;
+	if (!PDI || !Mesh) { return; }
+	const FReferenceSkeleton& Ref = Mesh->GetRefSkeleton();
+	// DisplayPose also installs the corrected component-space transforms when seeking cached frames.
+	const TArray<FTransform>& Pose = Main->GetComponentSpaceTransforms();
+	const int32 Count = FMath::Min(Ref.GetNum(), Pose.Num());
+	TBitArray<> CorrectionBones(false, Count);
+	if (Settings && Settings->PreviewCorrectionProfile) {
+		for (const auto& Chain : Settings->PreviewCorrectionProfile->Chains) {
+			const int32 Root = Ref.FindBoneIndex(Chain.RootBone.BoneName);
+			const int32 Tip = Ref.FindBoneIndex(Chain.TipBone.BoneName);
+			if (Root == INDEX_NONE || Tip == INDEX_NONE) { continue; }
+			TArray<int32, TInlineAllocator<16>> Path;
+			for (int32 Bone = Tip; Bone != INDEX_NONE && Bone < Count; Bone = Ref.GetParentIndex(Bone)) {
+				Path.Add(Bone);
+				if (Bone == Root) { break; }
+			}
+			if (!Path.IsEmpty() && Path.Last() == Root) {
+				for (int32 Bone : Path) { CorrectionBones[Bone] = true; }
+			}
+		}
+	}
+	const FTransform& ToWorld = Main->GetComponentTransform();
+	const FLinearColor BodyColor(0.f, .8f, 1.f);
+	const FLinearColor ChainColor(1.f, .8f, 0.f);
+	for (int32 Bone = 0; Bone < Count; ++Bone) {
+		const FVector Position = ToWorld.TransformPosition(Pose[Bone].GetTranslation());
+		if (Position.ContainsNaN()) { continue; }
+		PDI->DrawPoint(Position, CorrectionBones[Bone] ? ChainColor : BodyColor, CorrectionBones[Bone] ? 4.f : 2.5f, SDPG_Foreground);
+		const int32 Parent = Ref.GetParentIndex(Bone);
+		if (Parent != INDEX_NONE && Parent < Count) {
+			const FVector ParentPosition = ToWorld.TransformPosition(Pose[Parent].GetTranslation());
+			if (ParentPosition.ContainsNaN()) { continue; }
+			const bool bCorrectionEdge = CorrectionBones[Bone] && CorrectionBones[Parent];
+			PDI->DrawLine(ParentPosition, Position, bCorrectionEdge ? ChainColor : BodyColor, SDPG_Foreground, bCorrectionEdge ? 2.f : 1.f, 0.f, true);
+		}
+	}
 }
 
 USkeletalMeshComponent* FKawaiiPhysicsBakeSession::GetMainComponent() const {

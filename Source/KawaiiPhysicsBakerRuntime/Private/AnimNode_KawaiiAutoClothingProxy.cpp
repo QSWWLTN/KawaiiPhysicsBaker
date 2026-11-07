@@ -75,6 +75,8 @@ void FAnimNode_KawaiiAutoClothingProxy::PreUpdate(const UAnimInstance* Instance)
 	if (!Rebuild) {
 		return;
 	}
+	// A new garment/action cache has no continuous collision history with the old one.
+	Correction.ResetTemporalState();
 	Tracks.Reset();
 	ActionMap.Reset();
 	SnapshotAssets = Assets;

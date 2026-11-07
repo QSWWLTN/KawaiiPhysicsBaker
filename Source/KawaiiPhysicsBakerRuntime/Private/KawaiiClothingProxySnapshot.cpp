@@ -56,7 +56,7 @@ namespace KawaiiClothingProxy {
 				return false;
 			}
 			for (const FKawaiiClothingProxyShape& Shape : Motion.Shapes) {
-				if (!Names.Contains(Shape.StartBone) || (!Shape.EndBone.IsNone() && !Names.Contains(Shape.EndBone))) {
+				if (!Names.Contains(Shape.StartBone) || (!Shape.bBox && !Shape.EndBone.IsNone() && !Names.Contains(Shape.EndBone))) {
 					Error = TEXT("Proxy snapshot is missing a shape endpoint bone.");
 					return false;
 				}
@@ -248,7 +248,7 @@ namespace KawaiiClothingProxy {
 			}
 		}
 
-		const auto FollowBody = [&](int32 Bone, FVector& Point, double& RadiusScale) {
+		const auto FollowBody = [&](int32 Bone, FVector& Point, double& RadiusScale, FQuat* Orientation = nullptr) {
 			RadiusScale = 1.;
 			if (!LiveBodyPose) {
 				return true;
@@ -270,6 +270,7 @@ namespace KawaiiClothingProxy {
 				return false;
 			}
 			Point = Live->TransformPosition(Recorded.InverseTransformPosition(Point));
+			if (Orientation) { *Orientation = (Live->GetRotation() * Recorded.GetRotation().Inverse() * *Orientation).GetNormalized(); }
 			RadiusScale = (Live->GetScale3D() / Recorded.GetScale3D()).GetAbsMax();
 			return true;
 		};
@@ -277,7 +278,7 @@ namespace KawaiiClothingProxy {
 		Capsules.Reserve(First->Motion->Shapes.Num());
 		for (const FKawaiiClothingProxyShape& Shape : First->Motion->Shapes) {
 			const int32 Start = First->Motion->BoneNames.IndexOfByKey(Shape.StartBone);
-			const int32 End = Shape.EndBone.IsNone() ? Start : First->Motion->BoneNames.IndexOfByKey(Shape.EndBone);
+			const int32 End = Shape.bBox || Shape.EndBone.IsNone() ? Start : First->Motion->BoneNames.IndexOfByKey(Shape.EndBone);
 			if (!ComponentPose.IsValidIndex(Start) || !ComponentPose.IsValidIndex(End)) {
 				Error = TEXT("Proxy snapshot shape endpoint is unavailable.");
 				return false;
@@ -289,12 +290,17 @@ namespace KawaiiClothingProxy {
 			Capsule.End = ProxyToTarget.TransformPosition(ComponentPose[End].TransformPosition(Shape.EndOffset));
 			Capsule.Radius = Shape.Radius * FMath::Max(ComponentPose[Start].GetMaximumAxisScale(), ComponentPose[End].GetMaximumAxisScale())
 				* ProxyToTarget.GetMaximumAxisScale();
+			if (Shape.bBox) {
+				Capsule.BoxRotation = (ProxyToTarget.GetRotation() * ComponentPose[Start].GetRotation() * Shape.BoxRotation.Quaternion()).GetNormalized();
+				Capsule.BoxExtent = Shape.BoxExtent * ComponentPose[Start].GetMaximumAxisScale() * ProxyToTarget.GetMaximumAxisScale();
+			}
 			double StartScale, EndScale;
-			if (!FollowBody(Start, Capsule.Start, StartScale) || !FollowBody(End, Capsule.End, EndScale)) {
+			if (!FollowBody(Start, Capsule.Start, StartScale, Shape.bBox ? &Capsule.BoxRotation : nullptr) || !FollowBody(End, Capsule.End, EndScale)) {
 				Error = TEXT("Proxy snapshot could not align an endpoint to the live body pose.");
 				return false;
 			}
 			Capsule.Radius *= FMath::Max(StartScale, EndScale);
+			if (Shape.bBox) { Capsule.BoxExtent *= StartScale; Capsule.End = Capsule.Start; }
 			if (Capsule.Start.ContainsNaN() || Capsule.End.ContainsNaN() || !FMath::IsFinite(Capsule.Radius) || Capsule.Radius <= 0.f) {
 				Error = TEXT("Proxy snapshot target conversion produced invalid geometry.");
 				return false;
@@ -316,6 +322,7 @@ namespace KawaiiClothingProxy {
 		for (FKawaiiClothingProxyCapsule& Capsule : InOutCapsules) {
 			Capsule.Start = Live.TransformPosition(Recorded.InverseTransformPosition(Capsule.Start));
 			Capsule.End = Live.TransformPosition(Recorded.InverseTransformPosition(Capsule.End));
+			if (!Capsule.BoxExtent.IsZero()) { Capsule.BoxRotation = (Live.GetRotation() * Recorded.GetRotation().Inverse() * Capsule.BoxRotation).GetNormalized(); }
 		}
 	}
 }

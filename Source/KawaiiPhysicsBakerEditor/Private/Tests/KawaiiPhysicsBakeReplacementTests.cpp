@@ -22,7 +22,9 @@
 #include "UObject/UnrealType.h"
 
 #include "KawaiiPhysicsBakeReplacement.h"
+#include "KawaiiClothingMotionReadback.h"
 #include "KawaiiClothingProxyMotion.h"
+#include "KawaiiClothingProxyPlayback.h"
 #include "KawaiiPhysicsBakeBlueprint.h"
 #include "KawaiiPhysicsBakeSession.h"
 
@@ -82,6 +84,18 @@ namespace {
 		return UPackage::SavePackage(Asset.GetPackage(), &Asset, *Filename, Args);
 	}
 
+	bool MatchesSequence(UAnimSequence& Sequence, USkeletalMesh& Mesh, float Time, const TArray<FTransform>& Displayed, FString& Error) {
+		KawaiiClothingReadback::FFrame Decoded;
+		if (!KawaiiClothingReadback::Decode(Sequence, Mesh, Time, Decoded, Error)) { return false; }
+		for (int32 Bone = 0; Bone < Mesh.GetRefSkeleton().GetRawBoneNum(); ++Bone) {
+			if (!Displayed.IsValidIndex(Bone) || !Displayed[Bone].Equals(FTransform(Decoded.Pose[Bone]), .002)) {
+				Error = FString::Printf(TEXT("%s: playback differs at %.4f s, bone %d"), *Sequence.GetName(), Time, Bone);
+				return false;
+			}
+		}
+		return true;
+	}
+
 	class FSourceReplacementBakeCommand : public IAutomationLatentCommand
 	{
 	public:
@@ -98,8 +112,10 @@ namespace {
 			FString Error;
 			if (!bStarted) {
 				bStarted = true;
-				bRecordingPreview = bReadback;
-				if (!Session->Initialize(Blueprint.Get(), Error) || !(bReadback ? Session->StartPreview(Error) : Session->StartBake(Error))) {
+				const auto* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+				if (Settings->ExistingBakedBodyAnimation) { BodyGuid = DataGuid(*Settings->ExistingBakedBodyAnimation); }
+				bRecordingPreview = bReadback || Settings->ExistingBakedBodyAnimation;
+				if (!Session->Initialize(Blueprint.Get(), Error) || !(bRecordingPreview ? Session->StartPreview(Error) : Session->StartBake(Error))) {
 					Test->AddError(Error);
 					return true;
 				}
@@ -108,13 +124,20 @@ namespace {
 			if (bRecordingPreview) {
 				if (!Session->IsRunning()) { Test->AddError(Session->GetStatus().ToString()); return true; }
 				if (Session->GetCachedFrameCount() <= PreviewClothing.Num()) { return false; }
-				const auto* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+				auto* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
+				if (Settings->ExistingBakedBodyAnimation && !MatchesSequence(*Settings->ExistingBakedBodyAnimation, *Settings->MainMesh,
+					Session->GetPreviewTime(), Session->GetMainComponent()->GetComponentSpaceTransforms(), Error)) {
+					Test->AddError(Error);
+					return true;
+				}
 				TInlineComponentArray<USkeletalMeshComponent*> Components(Session->GetMainComponent()->GetOwner());
 				auto** Found = Components.FindByPredicate([&](auto* Component) { return Component->GetFName() == Settings->Parts[0].Name; });
 				if (!Found) { Test->AddError(TEXT("Missing preview garment")); return true; }
 				PreviewClothing.Add((*Found)->GetComponentSpaceTransforms());
 				if (PreviewClothing.Num() <= Session->GetLastFrame()) { return false; }
 				bRecordingPreview = false; Session->Cancel();
+				// The preview used a different ordinary source. Export must also work with that slot empty.
+				if (Settings->ExistingBakedBodyAnimation) { Settings->SourceAnimation = nullptr; }
 				if (!Session->StartBake(Error)) { Test->AddError(Error); return true; }
 				return false;
 			}
@@ -122,14 +145,15 @@ namespace {
 				return false;
 			}
 			const UKawaiiPhysicsBakeSettings* Settings = KawaiiPhysicsBake::GetSettings(Blueprint.Get());
-			UAnimSequence* Source = Settings->SourceAnimation;
-			const bool bReplace = Settings->bReplaceSourceAnimation;
+			const bool bReuse = Settings->ExistingBakedBodyAnimation != nullptr;
+			UAnimSequence* Source = bReuse ? Settings->ExistingBakedBodyAnimation.Get() : Settings->SourceAnimation.Get();
+			const bool bReplace = !bReuse && Settings->bReplaceSourceAnimation;
 			Test->TestTrue(*Session->GetStatus().ToString(), Session->GetStatus().ToString().Contains(bReplace ? TEXT("已替换源动画") : TEXT("已保存")));
 			Test->TestEqual(TEXT("Source is a result only in replacement mode"), Session->GetOutputAssets().Contains(Source), bReplace);
 			int32 NumBackups = 0;
 			int32 NumMotions = 0;
 			int32 NumSequences = 0;
-			UAnimSequence* MainResult = bReplace ? Source : nullptr;
+			UAnimSequence* MainResult = bReplace || bReuse ? Source : nullptr;
 			for (const TWeakObjectPtr<UObject>& Asset : Session->GetOutputAssets()) {
 				if (!Test->TestNotNull(TEXT("Output asset is valid"), Asset.Get())) {
 					continue;
@@ -148,7 +172,8 @@ namespace {
 				}
 			}
 			Test->TestNotNull(TEXT("Main animation result is available"), MainResult);
-			Test->TestEqual(TEXT("No extra Main animation is exported in replacement mode"), NumSequences, Settings->Parts.Num() + (bReplace ? 2 : 1));
+			const int32 ExpectedBodySequences = bReuse ? 0 : (bReplace ? 2 : 1);
+			Test->TestEqual(TEXT("Only the expected animation sequences are exported"), NumSequences, Settings->Parts.Num() + ExpectedBodySequences);
 			if (bReplace) {
 				Test->TestTrue(TEXT("Main result is the original source object"), MainResult == Source);
 				Test->TestEqual(
@@ -160,6 +185,8 @@ namespace {
 					TEXT("Source metadata never points to a transient take"),
 					Source->GetPackage()->GetMetaData()->GetValue(Source, TEXT("KawaiiBake.ReplacedWith")).IsEmpty()
 				);
+			} else if (bReuse) {
+				Test->TestEqual(TEXT("Reused body data is untouched"), DataGuid(*Source), BodyGuid);
 			} else {
 				Test->TestEqual(TEXT("Separate export leaves source data unchanged"), DataGuid(*Source), OriginalGuid);
 			}
@@ -192,11 +219,23 @@ namespace {
 							TEXT("Clothing proxy retains its separate animation"),
 							Motion->BakedAnimation.Get() != MainResult && Session->GetOutputAssets().Contains(Motion->BakedAnimation.Get())
 						);
+						if (bReuse && Motion->BakedAnimation.Get()) {
+							Test->TestEqual(TEXT("Proxy source is the selected playback sequence"), Motion->SourceAnimation.Get(), Source);
+							const auto* Set = Settings->Parts[0].ProxyMotionSet.Get();
+							Test->TestTrue(TEXT("Rebaking replaces the same body mapping"), Set && Set->Motions.Num() == 1 && Set->Motions[0] == Motion);
+							for (int32 Frame = 0; Frame < PreviewClothing.Num(); ++Frame) {
+								if (!MatchesSequence(*Motion->BakedAnimation.Get(), *Settings->Parts[0].Mesh, float(Frame) / Settings->SampleRate,
+									PreviewClothing[Frame], Error)) {
+									Test->AddError(Error);
+									break;
+								}
+							}
+						}
 					}
 				}
 			}
 			Test->TestEqual(TEXT("Source backup is created only for replacement"), NumBackups, bReplace ? 1 : 0);
-			int32 ExpectedMotions = Settings->ProxyDefinition ? 1 : 0;
+			int32 ExpectedMotions = Settings->ProxyDefinition && !bReuse ? 1 : 0;
 			for (const FKawaiiPhysicsBakePart& Part : Settings->Parts) {
 				ExpectedMotions += Part.ProxyDefinition ? 1 : 0;
 			}
@@ -216,6 +255,7 @@ namespace {
 		TStrongObjectPtr<UAnimBlueprint> Blueprint;
 		TStrongObjectPtr<UAnimSequence> Original;
 		FGuid OriginalGuid;
+		FGuid BodyGuid;
 		TSharedRef<FKawaiiPhysicsBakeSession> Session;
 		double StartedAt;
 		bool bStarted = false;
@@ -424,7 +464,7 @@ IMPLEMENT_COMPLEX_AUTOMATION_TEST(
 )
 
 void FKawaiiBakeReplaceSessionTest::GetTests(TArray<FString>& OutBeautifiedNames, TArray<FString>& OutTestCommands) const {
-	for (const TCHAR* Mode : {TEXT("ReplaceWithParts"), TEXT("SeparateWithParts"), TEXT("ReplaceMainOnly"), TEXT("ReplaceMainProxy"), TEXT("ClothingReadback")}) {
+	for (const TCHAR* Mode : {TEXT("ReplaceWithParts"), TEXT("SeparateWithParts"), TEXT("ReplaceMainOnly"), TEXT("ReplaceMainProxy"), TEXT("ClothingReadback"), TEXT("ReuseBakedBody")}) {
 		OutBeautifiedNames.Add(Mode);
 		OutTestCommands.Add(Mode);
 	}
@@ -457,6 +497,7 @@ bool FKawaiiBakeReplaceSessionTest::RunTest(const FString& Mode) {
 		return false;
 	}
 	Settings->SourceAnimation = Source;
+	Settings->ExistingBakedBodyAnimation = nullptr;
 	Settings->bReplaceSourceAnimation = Mode != TEXT("SeparateWithParts") && Mode != TEXT("ClothingReadback");
 	Settings->bPreviewClothingProxyCollision = false;
 	Settings->bEnableClothingCollision = false;
@@ -465,7 +506,7 @@ bool FKawaiiBakeReplaceSessionTest::RunTest(const FString& Mode) {
 	Settings->OutputPrefix = TEXT("ReplacementTest");
 	Settings->ProxyMotionSet = nullptr;
 	Settings->ProxyDefinition = nullptr;
-	if (Mode == TEXT("ClothingReadback")) {
+	if (Mode == TEXT("ClothingReadback") || Mode == TEXT("ReuseBakedBody")) {
 		auto* Definition = CreateAsset<UKawaiiClothingProxyAsset>(Prefix + TEXT("/BodyProxy"));
 		Definition->PreviewMesh = Settings->MainMesh;
 		for (const TCHAR* Side : {TEXT("L"), TEXT("R")}) {
@@ -495,6 +536,27 @@ bool FKawaiiBakeReplaceSessionTest::RunTest(const FString& Mode) {
 	}
 	for (FKawaiiPhysicsBakePart& Part : Settings->Parts) {
 		Part.ProxyMotionSet = nullptr;
+	}
+	if (Mode == TEXT("ReuseBakedBody")) {
+		Settings->Parts.SetNum(1);
+		auto& Garment = Settings->Parts[0];
+		Garment.Animation = nullptr;
+		Garment.CopyPoseFrom = TEXT("Main");
+		auto* Body = CreateAsset<UAnimSequence>(Prefix + TEXT("/PreviouslyBakedBody"));
+		Populate(*Body, *Settings->MainMesh->GetSkeleton(), 87.f, 24);
+		Body->bEnableRootMotion = true;
+		Body->bForceRootLock = true;
+		if (!TestTrue(TEXT("Previously baked body saved independently"), SaveFixture(*Body))) { return false; }
+		Settings->ExistingBakedBodyAnimation = Body;
+		auto* Set = CreateAsset<UKawaiiClothingProxyMotionSet>(Settings->OutputDirectory.Path + TEXT("/ExistingSet"));
+		auto* OldMotion = CreateAsset<UKawaiiClothingProxyMotion>(Prefix + TEXT("/EarlierMotion"));
+		OldMotion->Definition = Garment.ProxyDefinition;
+		OldMotion->SourceMesh = Garment.Mesh.Get();
+		OldMotion->RelativeTransform = Garment.RelativeTransform;
+		OldMotion->SourceAnimation = Source;
+		OldMotion->BodyBakedAnimation = Body;
+		Set->Motions.Add(OldMotion);
+		Garment.ProxyMotionSet = Set;
 	}
 	ADD_LATENT_AUTOMATION_COMMAND(FSourceReplacementBakeCommand(this, Copy, Original, Mode == TEXT("ClothingReadback")));
 	return true;

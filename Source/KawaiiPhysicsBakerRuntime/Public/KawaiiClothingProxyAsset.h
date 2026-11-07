@@ -8,7 +8,7 @@
 class USkeletalMesh;
 struct FReferenceSkeleton;
 
-/** A capsule bound to two clothing bones. Coincident endpoints form a sphere. */
+/** A bone-bound capsule/sphere, or an oriented box attached to StartBone. */
 USTRUCT(BlueprintType)
 struct KAWAIIPHYSICSBAKERRUNTIME_API FKawaiiClothingProxyShape
 {
@@ -19,14 +19,21 @@ struct KAWAIIPHYSICSBAKERRUNTIME_API FKawaiiClothingProxyShape
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "起点骨骼"))
 		FName StartBone;
 	/** None uses StartBone, including for spheres. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "终点骨骼"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "终点骨骼", EditCondition = "!bBox"))
 		FName EndBone;
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "起点局部偏移", ForceUnits = "cm"))
 		FVector StartOffset = FVector::ZeroVector;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "终点局部偏移", ForceUnits = "cm"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "终点局部偏移", EditCondition = "!bBox", ForceUnits = "cm"))
 		FVector EndOffset = FVector::ZeroVector;
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "半径", ClampMin = "0.01", ForceUnits = "cm"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "半径", EditCondition = "!bBox", ClampMin = "0.01", ForceUnits = "cm"))
 		float Radius = 3.f;
+	/** Boxes use StartBone/StartOffset as their center. EndBone is unused. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "使用盒体"))
+		bool bBox = false;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "盒体旋转", EditCondition = "bBox"))
+		FRotator BoxRotation = FRotator::ZeroRotator;
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Proxy", meta = (DisplayName = "盒体半尺寸", EditCondition = "bBox", ClampMin = "0.01", ForceUnits = "cm"))
+		FVector BoxExtent = FVector(3.f);
 };
 
 /** One reusable collision definition per garment, independent of animation clips. */

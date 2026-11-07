@@ -16,7 +16,7 @@ bool KawaiiPhysicsBakeBodyCollision::Update(const UKawaiiClothingProxyAsset& Def
 	const auto& Pose = Body.GetComponentSpaceTransforms();
 	TArray<KawaiiContact::FCapsule> Contacts;
 	for (const auto& Shape : Definition.Shapes) {
-		const int32 A = Reference.FindBoneIndex(Shape.StartBone), B = Reference.FindBoneIndex(Shape.EndBone.IsNone() ? Shape.StartBone : Shape.EndBone);
+		const int32 A = Reference.FindBoneIndex(Shape.StartBone), B = Reference.FindBoneIndex(Shape.bBox || Shape.EndBone.IsNone() ? Shape.StartBone : Shape.EndBone);
 		if (!Pose.IsValidIndex(A) || !Pose.IsValidIndex(B)) { Error = TEXT("身体代理端点骨骼不在 Main 当前姿态中。"); return false; }
 		FKawaiiClothingCapsuleDefinition CapsuleDefinition;
 		CapsuleDefinition.StartBone = Shape.StartBone; CapsuleDefinition.EndBone = Shape.EndBone;
@@ -25,7 +25,14 @@ bool KawaiiPhysicsBakeBodyCollision::Update(const UKawaiiClothingProxyAsset& Def
 		if (!KawaiiClothingCollision::BuildCapsuleFromComponentSpace(CapsuleDefinition, Pose[A], Pose[B], Body.GetComponentTransform(), Garment.GetComponentTransform(), Capsule)) {
 			Error = TEXT("身体代理转换至衣物组件空间失败。"); return false;
 		}
-		Contacts.Add({Capsule.Start, Capsule.End, Capsule.Radius});
+		auto& Contact = Contacts.Add_GetRef({Capsule.Start, Capsule.End, Capsule.Radius});
+		if (Shape.bBox) {
+			const FTransform& From = Body.GetComponentTransform();
+			const FTransform& To = Garment.GetComponentTransform();
+			Contact.B = Contact.A;
+			Contact.BoxExtent = Shape.BoxExtent * Pose[A].GetMaximumAxisScale() * KawaiiClothingCollision::ConservativeStretchBetweenSpaces(From, To);
+			Contact.BoxRotation = (To.GetRotation().Inverse() * From.GetRotation() * Pose[A].GetRotation() * Shape.BoxRotation.Quaternion()).GetNormalized();
+		}
 	}
 	int32 Nodes = 0;
 	for (const FStructProperty* Property : Interface->GetAnimNodeProperties()) {

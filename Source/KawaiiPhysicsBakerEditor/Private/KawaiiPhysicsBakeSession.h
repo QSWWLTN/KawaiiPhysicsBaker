@@ -12,6 +12,7 @@ class USkeletalMeshComponent;
 class UWorld;
 class AActor;
 class FKawaiiPhysicsBakePreviewCorrection;
+class FPrimitiveDrawInterface;
 
 /** Shared by the visible viewport and offline recorder. No gameplay actor is touched. */
 class FKawaiiPhysicsBakeSession : public FGCObject
@@ -58,6 +59,10 @@ public:
 	UWorld* GetWorld() const;
 	FPreviewScene* GetPreviewScene() const;
 	USkeletalMeshComponent* GetMainComponent() const;
+	/** Draw the displayed pose, so cached scrubbing and live preview use the same frame. */
+	void DrawClothingProxies(FPrimitiveDrawInterface* PDI) const;
+	/** Overlay the Main component's displayed bone transforms, including cached preview correction. */
+	void DrawPreviewBones(FPrimitiveDrawInterface* PDI) const;
 
 	const TArray<TWeakObjectPtr<UObject>>& GetOutputAssets() const { return OutputAssets; }
 

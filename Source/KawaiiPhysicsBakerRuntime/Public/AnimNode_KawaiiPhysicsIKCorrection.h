@@ -74,10 +74,14 @@ private:
 		int32 Anchor = INDEX_NONE;
 		TArray<FVector> SolvedLocal;
 		TArray<FVector> SmoothedOffsetLocal;
+		TArray<KawaiiPhysicsIKCorrection::FCapsule> CapsulesLocal;
+		uint32 CapsuleTopology = 0;
 	};
 
 	// Only PreUpdate reads the UObject. Worker evaluation uses owned value snapshots.
 	TArray<FKawaiiPhysicsIKCorrectionChain> SnapshotChains;
+	TArray<FKawaiiPhysicsIKContactBridge> SnapshotBridges;
+	int32 SnapshotBridgeIterations = 4;
 	TArray<FKawaiiPhysicsIKCorrectionCapsule> SnapshotCapsules;
 	TArray<KawaiiPhysicsIKCorrection::FCapsule> SnapshotParentCapsules;
 	bool bSnapshotUseAttachedParent = false;

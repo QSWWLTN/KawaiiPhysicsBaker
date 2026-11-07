@@ -23,6 +23,14 @@ namespace {
 		return FVector4f(float(Q.X), float(Q.Y), float(Q.Z), float(Q.W));
 	}
 
+	struct FChainWork {
+		TArray<FVector> Points, Reference;
+		TArray<double> Lengths, Radii;
+		TArray<FTransform> Warped;
+		TArray<KawaiiPhysicsIKCorrection::FCapsule> Shapes;
+		KawaiiPhysicsIKCorrection::FAngularConstraints Angular;
+	};
+
 	struct FResolvedChain
 	{
 		TArray<int32> Bones;
@@ -31,6 +39,9 @@ namespace {
 		int32 Driver = INDEX_NONE;
 		float Weight = 0.f;
 		float Radius = 0.f;
+		const FRichCurve* RadiusCurve = nullptr;
+		const FRichCurve* LimitAngleCurve = nullptr;
+		float LimitAngle = 0.f, MaxBendChange = 0.f;
 	};
 
 	bool FiniteTransform(const FTransform& Transform) {
@@ -136,6 +147,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 	bGPUCorrectionRequested = false;
 	bHasProfileSnapshot = Profile != nullptr;
 	SnapshotChains.Reset();
+	SnapshotBridges.Reset();
 	SnapshotCapsules.Reset();
 	SnapshotParentCapsules.Reset();
 	SnapshotError.Reset();
@@ -144,7 +156,31 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 	SnapshotSmoothingTime = 0.f;
 	if (Profile) {
 		SnapshotChains = Profile->Chains;
+		SnapshotBridges = Profile->ContactBridges;
+		SnapshotBridgeIterations = Profile->BridgeIterations;
+		for (auto& Chain : SnapshotChains) {
+			if (!Profile->bUseAngleLimits) { Chain.LimitAngle = 0.f; }
+			if (const auto* Rich = Chain.RadiusCurve.GetRichCurveConst()) { Chain.RadiusCurve.EditorCurveData = *Rich; }
+			Chain.RadiusCurve.ExternalCurve = nullptr;
+			if (const auto* Rich = Chain.LimitAngleCurve.GetRichCurveConst()) { Chain.LimitAngleCurve.EditorCurveData = *Rich; }
+			Chain.LimitAngleCurve.ExternalCurve = nullptr;
+		}
+		if (Profile->bUseMeshEnvelope) {
+			for (auto& Chain : SnapshotChains) {
+				if (!FMath::IsFinite(Chain.MeshEnvelopeRadius) || Chain.MeshEnvelopeRadius < 0.f
+					|| !FMath::IsFinite(Chain.CollisionRadius) || Chain.CollisionRadius < 0.f) {
+					SnapshotError = TEXT("invalid_mesh_envelope_radius");
+					break;
+				}
+				Chain.CollisionRadius = FMath::Max(Chain.CollisionRadius, Chain.MeshEnvelopeRadius);
+			}
+		}
 		SnapshotCapsules = Profile->Capsules;
+		for (const auto& Shape : SnapshotCapsules) {
+			if (Shape.bBox && (Shape.BoxExtent.ContainsNaN() || Shape.BoxExtent.GetMin() <= 0. || Shape.BoxRotation.ContainsNaN())) {
+				SnapshotError = TEXT("invalid_box_geometry"); break;
+			}
+		}
 		SnapshotIterations = Profile->Iterations;
 		SnapshotSettleTime = Profile->SettleTime;
 		SnapshotSmoothingTime = Profile->SmoothingTime;
@@ -196,7 +232,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 	const TArray<FTransform>& SourcePose = Source->GetComponentSpaceTransforms();
 	for (const FKawaiiPhysicsIKCorrectionCapsule& Definition : SnapshotCapsules) {
 		const int32 Start = SourceSkeleton.FindBoneIndex(Definition.StartBone.BoneName);
-		const int32 End = Definition.EndBone.BoneName.IsNone() ? Start : SourceSkeleton.FindBoneIndex(Definition.EndBone.BoneName);
+		const int32 End = Definition.bBox || Definition.EndBone.BoneName.IsNone() ? Start : SourceSkeleton.FindBoneIndex(Definition.EndBone.BoneName);
 		if (!SourcePose.IsValidIndex(Start) || !SourcePose.IsValidIndex(End)) {
 			SnapshotError = TEXT("attached_parent_collision_bone_missing");
 			return;
@@ -213,6 +249,11 @@ void FAnimNode_KawaiiPhysicsIKCorrection::PreUpdate(const UAnimInstance* InAnimI
 		Capsule.Start = TargetWorld.InverseTransformPosition(SourceWorld.TransformPosition(SourcePose[Start].TransformPosition(Definition.StartOffset)));
 		Capsule.End = TargetWorld.InverseTransformPosition(SourceWorld.TransformPosition(SourcePose[End].TransformPosition(Definition.EndOffset)));
 		Capsule.Radius = Definition.Radius * SpaceStretch * FMath::Max(SourcePose[Start].GetScale3D().GetAbsMax(), SourcePose[End].GetScale3D().GetAbsMax());
+		if (Definition.bBox) {
+			Capsule.BoxExtent = Definition.BoxExtent * SpaceStretch * SourcePose[Start].GetScale3D().GetAbsMax();
+			Capsule.BoxRotation = (TargetWorld.GetRotation().Inverse() * SourceWorld.GetRotation() * SourcePose[Start].GetRotation() * Definition.BoxRotation.Quaternion()).GetNormalized();
+			Capsule.End = Capsule.Start;
+		}
 		if (Capsule.Start.ContainsNaN() || Capsule.End.ContainsNaN() || !FMath::IsFinite(Capsule.Radius)) {
 			SnapshotError = TEXT("attached_parent_collision_nonfinite_capsule");
 			return;
@@ -270,7 +311,7 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 		DebugReason = TEXT("missing_profile_or_chains");
 		return;
 	}
-	if (SnapshotChains.Num() > 64 || SnapshotCapsules.Num() > 64 || SnapshotIterations < 1 || SnapshotIterations > 64 || !FMath::IsFinite(Alpha)) {
+	if (SnapshotChains.Num() > 64 || SnapshotCapsules.Num() > 64 || SnapshotBridges.Num() > 128 || SnapshotBridgeIterations < 1 || SnapshotBridgeIterations > 16 || SnapshotIterations < 1 || SnapshotIterations > 64 || !FMath::IsFinite(Alpha)) {
 		DebugReason = TEXT("invalid_profile_limits_or_alpha");
 		return;
 	}
@@ -312,6 +353,10 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 				DebugReason = TEXT("invalid_chain_weight_or_radius");
 				return;
 			}
+			if (!FMath::IsFinite(Definition.LimitAngle) || Definition.LimitAngle < 0.f || Definition.LimitAngle > 180.f
+				|| !FMath::IsFinite(Definition.MaxBendChange) || Definition.MaxBendChange < 0.f || Definition.MaxBendChange > 180.f) {
+				DebugReason = TEXT("invalid_chain_angle_limit"); return;
+			}
 			for (const FResolvedChain& Existing : Chains) {
 				if (IsInSubtree(Root, Existing.Bones[0], Parents) || IsInSubtree(Existing.Bones[0], Root, Parents)) {
 					DebugReason = TEXT("overlapping_corrected_subtrees");
@@ -328,6 +373,9 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 			Chain.Driver = Driver;
 			Chain.Weight = Definition.DriverWeight;
 			Chain.Radius = Definition.CollisionRadius;
+			Chain.RadiusCurve = Definition.RadiusCurve.GetRichCurveConst();
+			Chain.LimitAngle = Definition.LimitAngle; Chain.MaxBendChange = Definition.MaxBendChange;
+			Chain.LimitAngleCurve = Definition.LimitAngleCurve.GetRichCurveConst();
 		}
 		for (const FResolvedChain& Chain : Chains) {
 			for (const FResolvedChain& Other : Chains) {
@@ -350,12 +398,32 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 	}
 
 	TArray<KawaiiPhysicsIKCorrection::FCapsule> Capsules = SnapshotParentCapsules;
+	uint32 CapsuleTopology = GetTypeHash(bSnapshotUseAttachedParent);
+	for (const auto& Chain : Chains) {
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Chain.LimitAngle));
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Chain.MaxBendChange));
+		if (Chain.LimitAngleCurve) for (const auto& Key : Chain.LimitAngleCurve->Keys) {
+			for (float V : {Key.Time, Key.Value, Key.ArriveTangent, Key.LeaveTangent}) { CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(V)); }
+		}
+	}
+	for (const auto& Definition : SnapshotCapsules) {
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Definition.bBox));
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Definition.StartBone.BoneName));
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Definition.EndBone.BoneName));
+	}
+	for (const auto& Capsule : ExternalCapsules) {
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(!Capsule.BoxExtent.IsZero()));
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Capsule.Id));
+		for (FName IgnoredRoot : Capsule.IgnoredTargetRootBones) {
+			CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(IgnoredRoot));
+		}
+	}
 	{
 		TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_PrepareCapsules);
 		if (!bSnapshotUseAttachedParent) {
 			for (const FKawaiiPhysicsIKCorrectionCapsule& Definition : SnapshotCapsules) {
 				const int32 Start = ResolveBone(Definition.StartBone, RequiredBones);
-				const int32 End = Definition.EndBone.BoneName.IsNone() ? Start : ResolveBone(Definition.EndBone, RequiredBones);
+				const int32 End = Definition.bBox || Definition.EndBone.BoneName.IsNone() ? Start : ResolveBone(Definition.EndBone, RequiredBones);
 				if (Start == INDEX_NONE || End == INDEX_NONE) {
 					DebugReason = TEXT("capsule_bone_missing_at_current_lod");
 					return;
@@ -376,10 +444,54 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 				Capsule.Start = DriverCS[Start].TransformPosition(Definition.StartOffset);
 				Capsule.End = DriverCS[End].TransformPosition(Definition.EndOffset);
 				Capsule.Radius = Definition.Radius * FMath::Max(DriverCS[Start].GetScale3D().GetAbsMax(), DriverCS[End].GetScale3D().GetAbsMax());
+				if (Definition.bBox) {
+					Capsule.BoxExtent = Definition.BoxExtent * DriverCS[Start].GetScale3D().GetAbsMax();
+					Capsule.BoxRotation = (DriverCS[Start].GetRotation() * Definition.BoxRotation.Quaternion()).GetNormalized();
+					Capsule.End = Capsule.Start;
+				}
 			}
 		}
 	}
 
+	for (const auto& Shape : Capsules) {
+		if (Shape.Start.ContainsNaN() || Shape.End.ContainsNaN() || !FMath::IsFinite(Shape.Radius) || Shape.Radius <= 0.
+			|| Shape.BoxExtent.ContainsNaN() || (Shape.IsBox() && (Shape.BoxExtent.GetMin() <= 0. || !Shape.BoxRotation.IsNormalized()))) {
+			DebugReason = TEXT("nonfinite_transformed_collision_primitive"); return;
+		}
+	}
+	TArray<int32> BonePoint, PointOwner, PointLocal, ChainStarts;
+	BonePoint.Init(INDEX_NONE, NumBones);
+	for (int32 C = 0; C < Chains.Num(); ++C) {
+		ChainStarts.Add(PointOwner.Num());
+		for (int32 I = 0; I < Chains[C].Bones.Num(); ++I) {
+			BonePoint[Chains[C].Bones[I]] = PointOwner.Num(); PointOwner.Add(C); PointLocal.Add(I);
+		}
+	}
+	TArray<KawaiiPhysicsIKCorrection::FContactBridge> Bridges;
+	for (const auto& Definition : SnapshotBridges) {
+		if (Definition.Feedback == 0.f) { continue; }
+		const int32 A = ResolveBone(Definition.BoneA, RequiredBones), B = ResolveBone(Definition.BoneB, RequiredBones);
+		if (!BonePoint.IsValidIndex(A) || !BonePoint.IsValidIndex(B) || BonePoint[A] == INDEX_NONE || BonePoint[B] == INDEX_NONE
+			|| PointOwner[BonePoint[A]] == PointOwner[BonePoint[B]] || Definition.Samples < 1 || Definition.Samples > 10
+			|| !FMath::IsFinite(Definition.Feedback) || Definition.Feedback < 0.f || Definition.Feedback > 2.f) {
+			DebugReason = TEXT("invalid_contact_bridge_or_missing_bone_at_lod"); return;
+		}
+		auto& Bridge = Bridges.AddDefaulted_GetRef();
+		Bridge.A = BonePoint[A]; Bridge.B = BonePoint[B]; Bridge.FixedA = PointLocal[Bridge.A] == 0; Bridge.FixedB = PointLocal[Bridge.B] == 0;
+		Bridge.Samples = Definition.Samples; Bridge.Feedback = Definition.Feedback; Bridge.Shapes = Capsules;
+		auto External = ExternalCapsules;
+		External.RemoveAll([&](const auto& Shape) { return Shape.IgnoredTargetRootBones.Contains(Chains[PointOwner[Bridge.B]].RootName); });
+		if (!KawaiiPhysicsIKCorrection::AppendProxyCapsules(External, Bridge.Shapes, Chains[PointOwner[Bridge.A]].RootName)) {
+			DebugReason = TEXT("invalid_bridge_proxy_geometry"); return;
+		}
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Bridge.A));
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Bridge.B));
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Bridge.Samples));
+		CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(Definition.Feedback));
+	}
+	CapsuleTopology = HashCombineFast(CapsuleTopology, GetTypeHash(SnapshotBridgeIterations));
+	TArray<double> FlatRadii; FlatRadii.SetNumZeroed(PointOwner.Num());
+	TArray<FChainWork> Work;
 	TArray<uint8> Affected;
 	Affected.Init(0, NumBones);
 	for (int32 Bone = 0; Bone < NumBones; ++Bone) {
@@ -415,12 +527,14 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 		GPUFrame->DeltaTime = DeltaTime;
 		GPUFrame->SettleTime = ValidTimeConstant(SnapshotSettleTime);
 		GPUFrame->SmoothingTime = ValidTimeConstant(SnapshotSmoothingTime);
+		GPUFrame->Topology = CapsuleTopology;
 		CompactToPoint.Init(INDEX_NONE, NumBones);
 		TemporalStates.Reset();
 	} else if (GPUState) {
 		GPUState->Invalidate(this);
 	}
 
+	Work.SetNum(GPUFrame ? 0 : Chains.Num());
 	// Temporal stability. History is stored relative to each chain's live anchor, so body motion never lags.
 	const float SettleTime = ValidTimeConstant(SnapshotSettleTime);
 	const float SmoothingTime = ValidTimeConstant(SnapshotSmoothingTime);
@@ -471,12 +585,28 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 			}
 			// Keep the root fixed to the live anchor even when driver and anchor move in opposite directions.
 			Points[0] = ReferencePoints[0];
+			KawaiiPhysicsIKCorrection::FAngularConstraints Angular;
+			Angular.Pose = Points; Angular.MaxBendChangeRadians = FMath::DegreesToRadians(double(Chain.MaxBendChange));
+			TArray<double> PointRadii;
+			double TotalLength = 0., Along = 0.;
+			for (double Length : Lengths) { TotalLength += Length; }
+			for (int32 I = 0; I < Count; ++I) {
+				if (I > 0) { Along += Lengths[I - 1]; }
+				const double Scale = Chain.RadiusCurve && Chain.RadiusCurve->GetNumKeys() ? Chain.RadiusCurve->Eval(TotalLength > UE_SMALL_NUMBER ? Along / TotalLength : 0.) : 1.;
+				if (!FMath::IsFinite(Scale) || Scale < 0.) { DebugReason = TEXT("invalid_radius_curve"); return; }
+				PointRadii.Add(Chain.Radius * Scale);
+				if (!FMath::IsFinite(PointRadii.Last()) || PointRadii.Last() > MAX_flt) { DebugReason = TEXT("nonfinite_effective_radius"); return; }
+				FlatRadii[ChainStarts[ChainIndex] + I] = PointRadii.Last();
+				const double AngleScale = Chain.LimitAngleCurve && Chain.LimitAngleCurve->GetNumKeys() ? Chain.LimitAngleCurve->Eval(TotalLength > UE_SMALL_NUMBER ? Along / TotalLength : 0.) : 1.;
+				if (!FMath::IsFinite(AngleScale) || AngleScale < 0.) { DebugReason = TEXT("invalid_angle_limit_curve"); return; }
+				Angular.LimitRadians.Add(FMath::DegreesToRadians(FMath::Min(180., Chain.LimitAngle * AngleScale)));
+			}
 			if (GPUFrame) {
 				using namespace KawaiiPhysicsGPU;
 				FChain& GPUChain = GPUFrame->Chains.AddDefaulted_GetRef();
 				const int32 FirstPoint = GPUFrame->Points.Num() / PointStride;
 				GPUChain.Range = FUintVector4(FirstPoint, Count, GPUFrame->Capsules.Num() / 2, ChainCapsules.Num());
-				GPUChain.Parameters = FVector4f(Chain.Radius, Strength, SnapshotIterations, 0.f);
+				GPUChain.Parameters = FVector4f(Chain.Radius, Strength, SnapshotIterations, 1.f);
 				const FTransform& Anchor = DriverCS[Chain.Anchor];
 				GPUChain.AnchorRotation = GPUQuaternion(Anchor.GetRotation());
 				GPUChain.AnchorPosition = FVector4f(FVector3f(Anchor.GetTranslation()), 0.f);
@@ -485,6 +615,14 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Chain.Driver));
 				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Chain.Weight));
 				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Chain.Radius));
+				if (Chain.RadiusCurve) {
+					for (const auto& Key : Chain.RadiusCurve->Keys) {
+						for (float Value : {Key.Time, Key.Value, Key.ArriveTangent, Key.LeaveTangent}) {
+							GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(Value));
+						}
+					}
+				}
+				GPUFrame->Topology = HashCombineFast(GPUFrame->Topology, GetTypeHash(ChainCapsules.Num()));
 				for (int32 Index = 0; Index < Count; ++Index) {
 					const FTransform& Baseline = BaselineCS[Chain.Bones[Index]];
 					if (!FiniteTransform(Warped[Index])) {
@@ -493,16 +631,19 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 					}
 					GPUFrame->Points.Add(FVector4f(FVector3f(Points[Index]), Index > 0 ? float(Lengths[Index - 1]) : 0.f));
 					GPUFrame->PointBones.Add(RequiredBones.MakeMeshPoseIndex(FCompactPoseBoneIndex(Chain.Bones[Index])).GetInt());
-					GPUFrame->Points.Add(FVector4f(FVector3f(ReferencePoints[Index]), 0.f));
+					GPUFrame->Points.Add(FVector4f(FVector3f(ReferencePoints[Index]), float(PointRadii[Index])));
+
 					GPUFrame->Points.Add(GPUQuaternion(Baseline.GetRotation()));
-					GPUFrame->Points.Add(FVector4f(FVector3f(Baseline.GetScale3D()), 0.f));
+					GPUFrame->Points.Add(FVector4f(FVector3f(Baseline.GetScale3D()), Angular.LimitRadians[Index]));
 					GPUFrame->Points.Add(GPUQuaternion(Warped[Index].GetRotation()));
-					GPUFrame->Points.Add(FVector4f(FVector3f(Warped[Index].GetScale3D()), 0.f));
+					GPUFrame->Points.Add(FVector4f(FVector3f(Warped[Index].GetScale3D()), Angular.MaxBendChangeRadians));
 					CompactToPoint[Chain.Bones[Index]] = FirstPoint + Index;
 				}
 				for (const auto& Capsule : ChainCapsules) {
 					GPUFrame->Capsules.Add(FVector4f(FVector3f(Capsule.Start), float(Capsule.Radius)));
 					GPUFrame->Capsules.Add(FVector4f(FVector3f(Capsule.End), 0.f));
+					GPUFrame->ShapeData.Add(GPUQuaternion(Capsule.BoxRotation));
+					GPUFrame->ShapeData.Add(FVector4f(FVector3f(Capsule.BoxExtent), Capsule.IsBox() ? 1.f : 0.f));
 				}
 				continue;
 			}
@@ -512,16 +653,23 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 			FChainTemporalState* History = bAdvanceHistory ? &TemporalStates[ChainIndex] : nullptr;
 			if (History
 				&& (History->Bones != Chain.Bones || History->Anchor != Chain.Anchor || History->SolvedLocal.Num() != Count
-					|| History->SmoothedOffsetLocal.Num() != Count))
+					|| History->SmoothedOffsetLocal.Num() != Count || History->CapsulesLocal.Num() != ChainCapsules.Num()
+					|| History->CapsuleTopology != CapsuleTopology))
 			{
 				*History = FChainTemporalState();
 			}
 			const bool bHasHistory = History && !History->SolvedLocal.IsEmpty();
 			TArray<FVector> SidePoints;
-			if (bHasHistory && SettleTime > 0.f) {
+			TArray<KawaiiPhysicsIKCorrection::FCapsule> PreviousCapsules;
+			if (bHasHistory) {
 				SidePoints.SetNumUninitialized(Count);
 				for (int32 Index = 0; Index < Count; ++Index) {
 					SidePoints[Index] = AnchorCS.TransformPosition(History->SolvedLocal[Index]);
+				}
+				for (const auto& Capsule : History->CapsulesLocal) {
+					PreviousCapsules.Add({AnchorCS.TransformPosition(Capsule.Start), AnchorCS.TransformPosition(Capsule.End),
+						Capsule.Radius * AnchorCS.GetScale3D().GetAbsMax(), Capsule.BoxExtent * AnchorCS.GetScale3D().GetAbsMax(),
+						(AnchorCS.GetRotation() * Capsule.BoxRotation).GetNormalized()});
 				}
 				// Start from the previous corrected chain and settle back toward the input pose. A stateless
 				// solve can push a strand out of either side of a capsule and flips between frames.
@@ -536,7 +684,8 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 				ChainCapsules,
 				SnapshotIterations,
 				Chain.Radius,
-				SidePoints.IsEmpty() ? nullptr : &SidePoints
+				SidePoints.IsEmpty() ? nullptr : &SidePoints,
+				bHasHistory ? &PreviousCapsules : nullptr, &PointRadii, &Angular
 			);
 			if (!Diagnostics.bFinite) {
 				DebugReason = TEXT("nonfinite_chain_solution");
@@ -545,6 +694,13 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 			if (History) {
 				History->Bones = Chain.Bones;
 				History->Anchor = Chain.Anchor;
+				History->CapsuleTopology = CapsuleTopology;
+				History->CapsulesLocal.Reset();
+				for (const auto& Capsule : ChainCapsules) {
+					History->CapsulesLocal.Add({AnchorCS.InverseTransformPosition(Capsule.Start), AnchorCS.InverseTransformPosition(Capsule.End),
+						Capsule.Radius / AnchorCS.GetScale3D().GetAbsMax(), Capsule.BoxExtent / AnchorCS.GetScale3D().GetAbsMax(),
+						(AnchorCS.GetRotation().Inverse() * Capsule.BoxRotation).GetNormalized()});
+				}
 				History->SolvedLocal.SetNumUninitialized(Count);
 				for (int32 Index = 0; Index < Count; ++Index) {
 					History->SolvedLocal[Index] = AnchorCS.InverseTransformPosition(Points[Index]);
@@ -564,8 +720,62 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 				// Smoothing each point independently would stretch the strand; keep the baked bone lengths.
 				if (bSmooth) {
 					RestoreChainLengths(Points, Lengths, TargetPoints);
+					// Smoothing and length restoration are not collision-safe. Reproject the emitted
+					// chain, then keep that actual result as history instead of the penetrating candidate.
+					const auto FinalContacts = KawaiiPhysicsIKCorrection::SolveChain(Points, Lengths, ReferencePoints,
+						ChainCapsules, SnapshotIterations, Chain.Radius, &SidePoints, &PreviousCapsules, &PointRadii, &Angular);
+					if (!FinalContacts.bFinite) { DebugReason = TEXT("nonfinite_smoothed_contact_solution"); return; }
+					for (int32 Index = 0; Index < Count; ++Index) {
+						History->SolvedLocal[Index] = AnchorCS.InverseTransformPosition(Points[Index]);
+						History->SmoothedOffsetLocal[Index] = AnchorCS.InverseTransformVector(Points[Index] - TargetPoints[Index]);
+					}
 				}
 			}
+			auto& W = Work[ChainIndex]; W.Points = MoveTemp(Points); W.Reference = MoveTemp(ReferencePoints);
+			W.Lengths = MoveTemp(Lengths); W.Radii = MoveTemp(PointRadii); W.Warped = MoveTemp(Warped); W.Shapes = ChainCapsules;
+			W.Angular = MoveTemp(Angular);
+		}
+	}
+	for (auto& Bridge : Bridges) { Bridge.RadiusA = FlatRadii[Bridge.A]; Bridge.RadiusB = FlatRadii[Bridge.B]; }
+	if (GPUFrame) {
+		GPUFrame->BridgeIterations = SnapshotBridgeIterations;
+		for (const auto& Bridge : Bridges) {
+			GPUFrame->BridgeRanges.Add(FUintVector4(Bridge.A, Bridge.B, GPUFrame->Capsules.Num() / 2, Bridge.Shapes.Num()));
+			GPUFrame->BridgeParameters.Add(FVector4f(Bridge.RadiusA, Bridge.RadiusB, Bridge.Feedback, Bridge.Samples));
+			GPUFrame->BridgeFlags.Add(FUintVector4(Bridge.FixedA, Bridge.FixedB, 0, 0));
+			for (const auto& Shape : Bridge.Shapes) {
+				GPUFrame->Capsules.Add(FVector4f(FVector3f(Shape.Start), Shape.Radius)); GPUFrame->Capsules.Add(FVector4f(FVector3f(Shape.End), 0));
+				GPUFrame->ShapeData.Add(GPUQuaternion(Shape.BoxRotation)); GPUFrame->ShapeData.Add(FVector4f(FVector3f(Shape.BoxExtent), Shape.IsBox() ? 1.f : 0.f));
+			}
+		}
+	} else if (!Bridges.IsEmpty()) {
+		TArray<FVector> FlatPoints, FlatReference;
+		for (const auto& W : Work) { FlatPoints.Append(W.Points); FlatReference.Append(W.Reference); }
+		for (int32 Iteration = 0; Iteration < SnapshotBridgeIterations; ++Iteration) {
+			KawaiiPhysicsIKCorrection::ProjectBridges(FlatPoints, FlatReference, Bridges);
+			for (int32 C = 0; C < Work.Num(); ++C) {
+				auto& W = Work[C];
+				for (int32 I = 0; I < W.Points.Num(); ++I) { W.Points[I] = FlatPoints[ChainStarts[C] + I]; }
+				if (!KawaiiPhysicsIKCorrection::SolveChain(W.Points, W.Lengths, W.Reference, W.Shapes, 1, Chains[C].Radius, nullptr, nullptr, &W.Radii, &W.Angular).bFinite) {
+					DebugReason = TEXT("nonfinite_bridge_solution"); return;
+				}
+				for (int32 I = 0; I < W.Points.Num(); ++I) { FlatPoints[ChainStarts[C] + I] = W.Points[I]; }
+			}
+		}
+		if (bAdvanceHistory) {
+			for (int32 C = 0; C < Work.Num(); ++C) {
+				const auto& Anchor = DriverCS[Chains[C].Anchor];
+				for (int32 I = 0; I < Work[C].Points.Num(); ++I) {
+					TemporalStates[C].SolvedLocal[I] = Anchor.InverseTransformPosition(Work[C].Points[I]);
+					TemporalStates[C].SmoothedOffsetLocal[I] = Anchor.InverseTransformVector(Work[C].Points[I] - Work[C].Warped[I].GetTranslation());
+				}
+			}
+		}
+	}
+	for (int32 ChainIndex = 0; ChainIndex < Work.Num(); ++ChainIndex) {
+		const auto& Chain = Chains[ChainIndex]; const auto& W = Work[ChainIndex];
+		const auto& Points = W.Points; const auto& Lengths = W.Lengths; const auto& Warped = W.Warped;
+		const auto& ChainCapsules = W.Shapes; const auto& PointRadii = W.Radii; const int32 Count = Points.Num();
 			FQuat PreviousSwing = FQuat::Identity;
 			for (int32 Index = 0; Index < Count; ++Index) {
 				FTransform Solved = Warped[Index];
@@ -595,10 +805,16 @@ void FAnimNode_KawaiiPhysicsIKCorrection::CorrectPose(FPoseContext& Output, cons
 				for (const KawaiiPhysicsIKCorrection::FCapsule& Capsule : ChainCapsules) {
 					FVector OnChain, OnCapsule;
 					FMath::SegmentDistToSegmentSafe(A, B, Capsule.Start, Capsule.End, OnChain, OnCapsule);
-					MaxPenetration = FMath::Max(MaxPenetration, Capsule.Radius + Chain.Radius - FVector::Distance(OnChain, OnCapsule));
+					if (Capsule.IsBox()) {
+						// Diagnostic samples only; the solver uses continuous segment minimization.
+						for (int32 S = 0; S <= 32; ++S) {
+							const double T = double(S) / 32.;
+							MaxPenetration = FMath::Max(MaxPenetration, FMath::Lerp(PointRadii[Index - 1], PointRadii[Index], T)
+								- KawaiiPhysicsIKCorrection::SurfaceDistance(FMath::Lerp(A, B, T), Capsule));
+						}
+					} else { MaxPenetration = FMath::Max(MaxPenetration, Capsule.Radius + FMath::Max(PointRadii[Index - 1], PointRadii[Index]) - FVector::Distance(OnChain, OnCapsule)); }
 				}
 			}
-		}
 	}
 	// Side branches and descendants below the tip keep their baked local animation.
 	TRACE_CPUPROFILER_EVENT_SCOPE(KawaiiBaker_Correction_WriteOutputPose);

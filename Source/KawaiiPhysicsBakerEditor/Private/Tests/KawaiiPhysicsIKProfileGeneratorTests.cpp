@@ -261,6 +261,17 @@ bool FKawaiiIKProfileAnimBlueprintTest::RunTest(const FString&) {
 	HairBound.Radius = 1.f;
 	Hair->Node.SphericalLimits = {HeadSphere, HeadSphere, InnerSphere};
 	Hair->Node.CapsuleLimits = {HairBound};
+	FBoxLimit HeadBox; HeadBox.DrivingBone.BoneName = TEXT("Head"); HeadBox.OffsetLocation = FVector(3,4,5);
+	HeadBox.OffsetRotation = FRotator(10,25,30); HeadBox.Extent = FVector(2,3,4);
+	Hair->Node.BoxLimits = {HeadBox};
+	Hair->Node.BoneConstraintSubdivisionCount = 10;
+	FModifyBoneConstraint Link; Link.Bone1.BoneName = TEXT("Hair_A2"); Link.Bone2.BoneName = TEXT("Hair_B2");
+	Hair->Node.BoneConstraints = {Link, Link};
+	Hair->Node.RadiusCurveData.EditorCurveData.AddKey(0.f, .25f);
+	Hair->Node.RadiusCurveData.EditorCurveData.AddKey(1.f, 2.f);
+	Hair->Node.PhysicsSettings.LimitAngle = 40.f;
+	Hair->Node.LimitAngleCurveData.EditorCurveData.AddKey(0.f, .5f);
+	Hair->Node.LimitAngleCurveData.EditorCurveData.AddKey(1.f, 1.f);
 	AddPhysicsNode(TEXT("Tail_001"), 3.f);
 	UAnimGraphNode_KawaiiPhysics* Disabled = AddPhysicsNode(TEXT("Spine"), 9.f);
 	Disabled->SetEnabledState(ENodeEnabledState::Disabled, false);
@@ -308,19 +319,31 @@ bool FKawaiiIKProfileAnimBlueprintTest::RunTest(const FString&) {
 		TEXT("Hair keeps the node radius"),
 		KawaiiIKProfileGeneratorTests::HasChain(Profile->Chains, TEXT("Hair_B1"), TEXT("Hair_B2"), TEXT("Hair_Root"), 2.f)
 	);
-	if (TestEqual(TEXT("Only the unique outer sphere outside corrected chains is imported"), Profile->Capsules.Num(), 1)) {
+	if (TestEqual(TEXT("The unique outer sphere and box outside corrected chains are imported"), Profile->Capsules.Num(), 2)) {
 		TestTrue(
 			TEXT("The sphere keeps its bone, offset and radius"),
-			Profile->Capsules[0].StartBone.BoneName == TEXT("Head") && Profile->Capsules[0].StartOffset.Equals(FVector(0, 0, 5))
-				&& Profile->Capsules[0].EndOffset.Equals(FVector(0, 0, 5)) && Profile->Capsules[0].Radius == 8.f
+			Profile->Capsules[1].StartBone.BoneName == TEXT("Head") && Profile->Capsules[1].StartOffset.Equals(FVector(0, 0, 5))
+				&& Profile->Capsules[1].EndOffset.Equals(FVector(0, 0, 5)) && Profile->Capsules[1].Radius == 8.f
 		);
 	}
+	TestEqual(TEXT("Explicit native bridge collision is imported and deduplicated"), Profile->ContactBridges.Num(), 1);
+	TestEqual(TEXT("Native subdivision count 10 is preserved"), Profile->ContactBridges[0].Samples, 10);
+	TestTrue(TEXT("Box dimensions and orientation survive generation"), Profile->Capsules[0].bBox
+		&& Profile->Capsules[0].BoxExtent.Equals(HeadBox.Extent) && Profile->Capsules[0].BoxRotation.Equals(HeadBox.OffsetRotation));
+	TestTrue(TEXT("The source radius curve is preserved instead of inflating every point"), Profile->Chains[0].RadiusCurve.GetRichCurveConst()->GetNumKeys() > 0);
+	TestTrue(TEXT("Angle limits and remapped curve are imported"), Profile->Chains[0].LimitAngle > 0.f && Profile->Chains[0].LimitAngleCurve.GetRichCurveConst()->GetNumKeys() > 0);
+	const auto& Imported = Profile->Chains[0];
+	TestTrue(TEXT("A branch starts at its original depth, not at the source curve's zero"), Imported.LimitAngle * Imported.LimitAngleCurve.GetRichCurveConst()->Eval(0.f) > 20.f);
 	TestTrue(TEXT("The empty proxy profile is assigned"), ProxyNode->Node.Profile.Get() == Profile);
 	TestTrue(TEXT("The blueprint still compiles"), Blueprint->Status != BS_Error);
 
 	Profile->Iterations = 24;
+	Profile->Chains[0].MaxBendChange = 20.f;
+	Profile->bUseAngleLimits = false;
 	TestTrue(TEXT("Regeneration updates the same asset in place"), Generate(Blueprint.Get(), Options, Report) == Profile);
 	TestEqual(TEXT("Regeneration keeps solver tuning"), Profile->Iterations, 24);
+	TestEqual(TEXT("Regeneration keeps authored bend allowance"), Profile->Chains[0].MaxBendChange, 20.f);
+	TestFalse(TEXT("Regeneration keeps the independent angle switch"), Profile->bUseAngleLimits);
 	TestTrue(TEXT("Regeneration reports the existing assignment"), Report.Contains(TEXT("已在使用该配置")));
 
 	UKawaiiPhysicsIKCorrectionProfile* Other = NewObject<UKawaiiPhysicsIKCorrectionProfile>(Package);
